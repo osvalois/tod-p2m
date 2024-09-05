@@ -186,6 +186,105 @@ func (a *App) setupRoutes() {
 	a.router.Get("/stream/{infoHash}/{fileID}", a.streamHandler)
 	a.router.Get("/hls/{infoHash}/{fileID}/playlist.m3u8", a.hlsPlaylistHandler)
 	a.router.Get("/hls/{infoHash}/{fileID}/{segmentID}.ts", a.hlsSegmentHandler)
+
+	// Nuevas rutas para ver documentos e imágenes
+	a.router.Get("/documents/{infoHash}/{fileID}", a.documentHandler)
+	a.router.Get("/images/{infoHash}/{fileID}", a.imageHandler)
+}
+
+func (a *App) documentHandler(w http.ResponseWriter, r *http.Request) {
+	infoHash := chi.URLParam(r, "infoHash")
+	fileIDStr := chi.URLParam(r, "fileID")
+
+	fileID, err := strconv.Atoi(fileIDStr)
+	if err != nil {
+		a.logger.Error().Err(err).Str("fileID", fileIDStr).Msg("Invalid file ID")
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, map[string]string{"error": "Invalid file ID"})
+		return
+	}
+
+	t, err := a.getTorrent(infoHash)
+	if err != nil {
+		a.logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, map[string]string{"error": "Failed to get torrent"})
+		return
+	}
+
+	if fileID < 0 || fileID >= len(t.Files()) {
+		a.logger.Error().Int("fileID", fileID).Msg("File not found")
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, map[string]string{"error": "File not found"})
+		return
+	}
+
+	file := t.Files()[fileID]
+	reader := file.NewReader()
+	defer reader.Close()
+
+	fileName := filepath.Base(file.DisplayPath())
+	fileExt := filepath.Ext(fileName)
+	mimeType := getMIMEType(fileExt)
+
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, fileName))
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	// Envía el contenido del documento
+	w.Header().Set("Content-Length", strconv.FormatInt(file.Length(), 10))
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, reader); err != nil {
+		a.logger.Error().Err(err).Msg("Failed to stream document")
+	}
+}
+
+func (a *App) imageHandler(w http.ResponseWriter, r *http.Request) {
+	infoHash := chi.URLParam(r, "infoHash")
+	fileIDStr := chi.URLParam(r, "fileID")
+
+	fileID, err := strconv.Atoi(fileIDStr)
+	if err != nil {
+		a.logger.Error().Err(err).Str("fileID", fileIDStr).Msg("Invalid file ID")
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, map[string]string{"error": "Invalid file ID"})
+		return
+	}
+
+	t, err := a.getTorrent(infoHash)
+	if err != nil {
+		a.logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, map[string]string{"error": "Failed to get torrent"})
+		return
+	}
+
+	if fileID < 0 || fileID >= len(t.Files()) {
+		a.logger.Error().Int("fileID", fileID).Msg("File not found")
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, map[string]string{"error": "File not found"})
+		return
+	}
+
+	file := t.Files()[fileID]
+	reader := file.NewReader()
+	defer reader.Close()
+
+	fileName := filepath.Base(file.DisplayPath())
+	fileExt := filepath.Ext(fileName)
+	mimeType := getMIMEType(fileExt)
+
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, fileName))
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	// Envía el contenido de la imagen
+	w.Header().Set("Content-Length", strconv.FormatInt(file.Length(), 10))
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, reader); err != nil {
+		a.logger.Error().Err(err).Msg("Failed to stream image")
+	}
 }
 
 func (a *App) Serve() error {

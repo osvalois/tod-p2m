@@ -2,13 +2,14 @@
 
 ## Overview
 
-This application is a **tod-p2m** built in Go, designed to stream video and audio content directly from torrent files. The API provides endpoints to interact with torrent files, retrieve torrent metadata, and serve media content via HTTP streaming, including HLS (HTTP Live Streaming) for segmented media delivery.
+This application is designed to stream video, audio, images, and documents directly from torrent files. The API provides endpoints to interact with torrent files, retrieve torrent metadata, and serve media content via HTTP streaming, including HLS (HTTP Live Streaming) for segmented media delivery.
 
 ## Features
 
 - **Magnet Link Support**: Automatically fetches and streams content from magnet links.
 - **HTTP Streaming**: Streams torrent files over HTTP with support for byte-range requests.
 - **HLS Streaming**: Provides HLS playlists and segmented `.ts` files for adaptive streaming.
+- **Document and Image Streaming**: Streams various document formats (PDF, TXT) and images (JPEG, PNG) directly from torrents.
 - **Rate Limiting**: Configurable download and upload rate limits.
 - **Cache Management**: Built-in cache and cleanup system for managing torrent lifecycle.
 - **Customizable Configuration**: Fully configurable through environment variables and configuration files.
@@ -128,6 +129,20 @@ hls_segment_duration: 10
 
    **Endpoint**: `GET /hls/{infoHash}/{fileID}/{segmentID}.ts`
 
+### 5. **Stream Document**
+   Streams a document (PDF, TXT) from a torrent.
+
+   **Endpoint**: `GET /document/{infoHash}/{fileID}`
+
+   **Response**: Returns the document for viewing or downloading.
+
+### 6. **Stream Image**
+   Streams an image (JPEG, PNG) from a torrent.
+
+   **Endpoint**: `GET /image/{infoHash}/{fileID}`
+
+   **Response**: Returns the image for viewing or downloading.
+
 ## Configuration
 
 The application can be configured using a YAML file or environment variables.
@@ -178,7 +193,7 @@ This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) f
 
 ## Contact
 
-For any inquiries or support, feel free to reach out to [your-email@example.com](mailto:osvaloismtz@gmail.com").
+For any inquiries or support, feel free to reach out to [your-email@example.com](mailto:osvaloismtz@gmail.com).
 
 ---
 
