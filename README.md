@@ -145,10 +145,6 @@ tod-p2m is built on a modular, microservices-oriented architecture, ensuring sca
    docker run -p 8080:8080 -v /path/to/config:/app/config tod-p2m:latest
    ```
 
-### 4.4 Kubernetes Deployment
-
-Refer to the [Kubernetes Deployment Guide](docs/kubernetes-deployment.md) for detailed instructions on deploying tod-p2m in a Kubernetes cluster.
-
 ## 5. Configuration
 
 tod-p2m uses a YAML configuration file and environment variables for flexible setup.
@@ -331,13 +327,6 @@ Refer to the [Load Testing Guide](docs/load-testing.md) for instructions on perf
 ### 12.1 Containerized Deployment
 
 Refer to the [Docker Deployment Guide](docs/docker-deployment.md) for detailed instructions on deploying tod-p2m using Docker.
-
-### 12.2 Cloud Deployment
-
-Guidelines for deploying on major cloud platforms:
-- [AWS Deployment Guide](docs/aws-deployment.md)
-- [Google Cloud Deployment Guide](docs/gcp-deployment.md)
-- [Azure Deployment Guide](docs/azure-deployment.md)
 
 ## 13. Contributing
 
