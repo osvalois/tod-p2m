@@ -79,10 +79,9 @@ tod-p2m is built on a modular, microservices-oriented architecture, ensuring sca
          │                     │                     │
          └─────────────────────┼─────────────────────┘
                                │
-                       ┌───────────────────────┐
-                       │       Database        │
-                       │  (Redis/SQL/Storage)  │
-                       └───────────────────────┘
+                   ┌───────────────────────┐
+                   │      Storage&DB       │
+                   └───────────────────────┘
 ```
 
 ### 3.2 Component Descriptions
@@ -90,7 +89,7 @@ tod-p2m is built on a modular, microservices-oriented architecture, ensuring sca
 - **API Gateway**: Handles incoming requests, authentication, and rate limiting.
 - **Torrent Engine**: Manages torrent downloads, piece selection, and peer communication.
 - **Media Streamer**: Responsible for adaptive streaming and format-specific handling.
-- **Database**: Stores metadata, user information, and caching data.
+- **Database**: Stores metadata and caching data.
 
 ### 3.3 Technology Stack
 
