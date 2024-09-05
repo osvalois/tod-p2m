@@ -2,7 +2,8 @@ port: "8080"
 log_level: "info"
 torrent_timeout: "60s"
 max_connections: 100
-download_rate_limit: 0
-upload_rate_limit: 0
-cache_size: 100
+download_rate_limit: 0  # 0 means no limit
+upload_rate_limit: 0    # 0 means no limit
+cache_size: 1000        # in MB
 cleanup_interval: "10m"
+hls_segment_duration: 10

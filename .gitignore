@@ -74,3 +74,8 @@ fly.toml
 # Ignorar directorios de caché
 .cache/
 
+*~
+*.bak
+*.swp
+*.go-e
+*-eY
