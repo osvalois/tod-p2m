@@ -48,3 +48,29 @@ tmp/
 
 # Test coverage result
 coverage.out
+
+# Ignorar archivos de base de datos de torrent
+.torrent.db
+.torrent.db-shm
+.torrent.db-wal
+
+# Ignorar archivos de configuración temporales
+*.tmp
+*.log
+
+# Ignorar archivos de compilación
+*.o
+*.out
+*.exe
+
+# Ignorar archivos de dependencias
+go.mod
+go.sum
+
+# Ignorar archivos de Docker
+Dockerfile
+fly.toml
+
+# Ignorar directorios de caché
+.cache/
+
