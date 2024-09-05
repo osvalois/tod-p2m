@@ -1,33 +1,53 @@
-# Primera etapa: compilar la aplicación
-FROM golang:latest AS build
+# Start from a golang alpine image
+FROM golang:1.17-alpine AS builder
 
-# Establece el directorio de trabajo dentro del contenedor
-WORKDIR /app
+# Install git and SSL ca certificates.
+# Git is required for fetching the dependencies.
+# Ca-certificates is required to call HTTPS endpoints.
+RUN apk update && apk add --no-cache git ca-certificates tzdata && update-ca-certificates
 
-# Copia solo los archivos necesarios para la compilación
-COPY go.mod go.sum ./
+# Create appuser
+ENV USER=appuser
+ENV UID=10001
+
+# See https://stackoverflow.com/a/55757473/12429735
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    "${USER}"
+
+WORKDIR $GOPATH/src/mypackage/myapp/
+
+# Use modules
+COPY go.mod .
+COPY go.sum .
+
 RUN go mod download
+RUN go mod verify
 
-# Copia el resto del código fuente
 COPY . .
 
-# Compila la aplicación
-RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+# Build the binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o /go/bin/app
 
-# Segunda etapa para la imagen final
-FROM alpine:latest
+# Final stage
+FROM scratch
 
-# Instala ffmpeg en la imagen Alpine
-RUN apk --no-cache add ffmpeg
+# Import from builder.
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /etc/passwd /etc/passwd
+COPY --from=builder /etc/group /etc/group
 
-# Establece el directorio de trabajo dentro del contenedor
-WORKDIR /app
+# Copy our static executable
+COPY --from=builder /go/bin/app /go/bin/app
 
-# Copia solo los archivos necesarios desde la etapa anterior
-COPY --from=build /app/main .
+# Use an unprivileged user.
+USER appuser:appuser
 
-# Expone el puerto en el que la aplicación se ejecutará
-EXPOSE 8080
-
-# Comando para ejecutar la aplicación
-CMD ["./main"]
+# Run the app binary.
+ENTRYPOINT ["/go/bin/app"]

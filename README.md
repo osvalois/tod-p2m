@@ -1,200 +1,366 @@
-# tod-p2m
+# tod-p2m: Torrent-On-Demand Streaming Platform
 
-## Overview
+[![Go Report Card](https://goreportcard.com/badge/github.com/osvalois/tod-p2m)](https://goreportcard.com/report/github.com/osvalois/tod-p2m)
+[![GoDoc](https://godoc.org/github.com/osvalois/tod-p2m?status.svg)](https://godoc.org/github.com/osvalois/tod-p2m)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Build Status](https://github.com/osvalois/tod-p2m/workflows/CI/badge.svg)](https://github.com/osvalois/tod-p2m/actions)
+[![Coverage Status](https://coveralls.io/repos/github/osvalois/tod-p2m/badge.svg?branch=main)](https://coveralls.io/github/osvalois/tod-p2m?branch=main)
+[![Docker Pulls](https://img.shields.io/docker/pulls/osvalois/tod-p2m.svg)](https://hub.docker.com/r/osvalois/tod-p2m)
 
-This application is designed to stream video, audio, images, and documents directly from torrent files. The API provides endpoints to interact with torrent files, retrieve torrent metadata, and serve media content via HTTP streaming, including HLS (HTTP Live Streaming) for segmented media delivery.
+## Table of Contents
 
-## Features
+1. [Introduction](#introduction)
+2. [Key Features](#key-features)
+3. [System Architecture](#system-architecture)
+4. [Installation and Setup](#installation-and-setup)
+5. [Configuration](#configuration)
+6. [API Reference](#api-reference)
+7. [Usage Examples](#usage-examples)
+8. [Performance Optimization](#performance-optimization)
+9. [Security Considerations](#security-considerations)
+10. [Monitoring and Logging](#monitoring-and-logging)
+11. [Testing Strategy](#testing-strategy)
+12. [Deployment](#deployment)
+13. [Contributing](#contributing)
+14. [Versioning](#versioning)
+15. [License](#license)
+16. [Acknowledgments](#acknowledgments)
+17. [Support and Contact](#support-and-contact)
 
-- **Magnet Link Support**: Automatically fetches and streams content from magnet links.
-- **HTTP Streaming**: Streams torrent files over HTTP with support for byte-range requests.
-- **HLS Streaming**: Provides HLS playlists and segmented `.ts` files for adaptive streaming.
-- **Document and Image Streaming**: Streams various document formats (PDF, TXT) and images (JPEG, PNG) directly from torrents.
-- **Rate Limiting**: Configurable download and upload rate limits.
-- **Cache Management**: Built-in cache and cleanup system for managing torrent lifecycle.
-- **Customizable Configuration**: Fully configurable through environment variables and configuration files.
-- **Cross-Origin Resource Sharing (CORS)**: CORS-enabled API to allow content access from multiple sources.
+## 1. Introduction
 
-## Architecture
+tod-p2m (Torrent-On-Demand Streaming Platform) is a high-performance, scalable application designed for streaming media content directly from torrent files. Built with Go, it leverages the power of BitTorrent protocol to provide seamless, on-demand access to a wide range of media formats including video, audio, images, and documents.
 
-This application uses the **Go-Chi** router for request handling and **anacrolix/torrent** for torrent client management. It is designed with performance and scalability in mind, capable of handling concurrent connections and efficient memory usage for streaming large files.
+### 1.1 Purpose
 
-### Key Components:
+The primary goal of tod-p2m is to offer a robust, efficient, and user-friendly solution for streaming torrent-based content, eliminating the need for complete downloads before playback. This platform is ideal for applications requiring quick access to large media files, such as video-on-demand services, digital libraries, or content distribution networks.
 
-- **Torrent Client**: Handles torrent fetching, peer communication, and data streaming.
-- **HTTP API**: Serves torrent metadata and media files using byte-range or HLS.
-- **Cache System**: Ensures efficient memory and file system usage, removing inactive or completed torrents.
+### 1.2 Target Audience
 
-## Requirements
+- Software developers building media streaming applications
+- System administrators managing content delivery networks
+- Researchers working on peer-to-peer technologies
+- Media companies looking for efficient content distribution solutions
 
-- **Go** (v1.18+)
-- **Config File**: `config.yaml` to customize the application's behavior.
+## 2. Key Features
 
-### Example `config.yaml`
+- **Magnet Link Support**: Seamless integration with magnet links for instant content access.
+- **Multi-Protocol Streaming**: 
+  - HTTP Live Streaming (HLS) for adaptive bitrate streaming
+  - HTTP byte-range requests for progressive downloading
+- **Format Versatility**: Support for various media formats including video (MP4, WebM), audio (MP3, OGG), images (JPEG, PNG), and documents (PDF, TXT).
+- **Dynamic Rate Limiting**: Configurable bandwidth management for both download and upload streams.
+- **Intelligent Caching**: Sophisticated caching mechanisms to optimize resource usage and enhance performance.
+- **Cross-Origin Resource Sharing (CORS)**: Built-in CORS support for seamless integration with web applications.
+- **Concurrent Connection Handling**: Efficient management of multiple simultaneous connections leveraging Go's concurrency model.
+- **Real-time Analytics**: Detailed metrics and analytics for monitoring system performance and user engagement.
 
-```yaml
-port: "8080"
-log_level: "info"
-torrent_timeout: 30s
-max_connections: 100
-download_rate_limit: 0
-upload_rate_limit: 0
-cache_size: 100
-cleanup_interval: 10m
-hls_segment_duration: 10
+## 3. System Architecture
+
+tod-p2m is built on a modular, microservices-oriented architecture, ensuring scalability, maintainability, and ease of deployment.
+
+### 3.1 High-Level Architecture Diagram
+
+```
+┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
+│    API Gateway  │   │  Torrent Engine │   │  Media Streamer │
+│                 │   │                 │   │                 │
+│  ┌───────────┐  │   │  ┌───────────┐  │   │  ┌───────────┐  │
+│  │ Rate      │  │   │  │ Torrent   │  │   │  │ HLS       │  │
+│  │ Limiter   │◄─┼───┼─▶│ Manager   │◄─┼───┼─▶│ Generator │  │
+│  └───────────┘  │   │  └───────────┘  │   │  └───────────┘  │
+│                 │   │                 │   │                 │
+│  ┌───────────┐  │   │  ┌───────────┐  │   │  ┌───────────┐  │
+│  │ Auth      │  │   │  │ Piece     │  │   │  │ MIME      │  │
+│  │ Middleware│  │   │  │ Selector  │  │   │  │ Handler   │  │
+│  └───────────┘  │   │  └───────────┘  │   │  └───────────┘  │
+└─────────────────┘   └─────────────────┘   └─────────────────┘
+         ▲                     ▲                     ▲
+         │                     │                     │
+         └─────────────────────┼─────────────────────┘
+                               │
+                       ┌───────────────┐
+                       │   Database    │
+                       │  (Redis/SQL)  │
+                       └───────────────┘
 ```
 
-## Installation
+### 3.2 Component Descriptions
 
-1. **Clone the Repository**
+- **API Gateway**: Handles incoming requests, authentication, and rate limiting.
+- **Torrent Engine**: Manages torrent downloads, piece selection, and peer communication.
+- **Media Streamer**: Responsible for adaptive streaming and format-specific handling.
+- **Database**: Stores metadata, user information, and caching data.
 
+### 3.3 Technology Stack
+
+- **Backend**: Go 1.18+
+- **Frameworks**: 
+  - HTTP Router: [Go-Chi](https://github.com/go-chi/chi)
+  - Torrent Client: [anacrolix/torrent](https://github.com/anacrolix/torrent)
+- **Logging**: [zerolog](https://github.com/rs/zerolog)
+- **Database**: Redis for caching, PostgreSQL for persistent storage
+- **Containerization**: Docker
+- **Orchestration**: Kubernetes (optional for large-scale deployments)
+
+## 4. Installation and Setup
+
+### 4.1 Prerequisites
+
+- Go 1.18 or higher
+- Docker and Docker Compose (for containerized deployment)
+- Git
+
+### 4.2 Local Installation
+
+1. Clone the repository:
    ```bash
    git clone https://github.com/osvalois/tod-p2m.git
-   ```
-
-2. **Navigate to the Project Directory**
-
-   ```bash
    cd tod-p2m
    ```
 
-3. **Install Dependencies**
-
-   Ensure you have Go installed, then install the required packages:
-
+2. Install dependencies:
    ```bash
    go mod download
    ```
 
-4. **Configure the Application**
-
-   Create or modify the `config.yaml` file in the root directory with your custom settings, or use the default settings.
-
-5. **Run the Application**
-
-   Start the server:
-
+3. Build the application:
    ```bash
-   go run main.go
+   go build -o tod-p2m ./cmd/server
    ```
 
-6. **Build the Application** (optional)
-
-   You can build the project into a binary:
-
+4. Run the application:
    ```bash
-   go build -o tod-p2m
+   ./tod-p2m
    ```
 
-## API Endpoints
+### 4.3 Docker Installation
 
-### 1. **Get Torrent Info**
-   Retrieves metadata of the torrent, including file details.
-
-   **Endpoint**: `GET /torrent/{infoHash}`
-
-   **Response**:
-   ```json
-   {
-     "infoHash": "1234567890abcdef...",
-     "name": "Torrent Name",
-     "files": [
-       {
-         "id": 0,
-         "name": "file1.mp4",
-         "size": 104857600,
-         "progress": 0.56
-       }
-     ]
-   }
+1. Build the Docker image:
+   ```bash
+   docker build -t tod-p2m:latest .
    ```
 
-### 2. **Stream File**
-   Streams a specific file from a torrent using byte-range requests.
+2. Run the container:
+   ```bash
+   docker run -p 8080:8080 -v /path/to/config:/app/config tod-p2m:latest
+   ```
 
-   **Endpoint**: `GET /stream/{infoHash}/{fileID}`
+### 4.4 Kubernetes Deployment
 
-   **Headers**:
-   - `Range`: Optional for partial file requests.
+Refer to the [Kubernetes Deployment Guide](docs/kubernetes-deployment.md) for detailed instructions on deploying tod-p2m in a Kubernetes cluster.
 
-### 3. **HLS Playlist**
-   Provides an HLS playlist for a video or audio file in the torrent.
+## 5. Configuration
 
-   **Endpoint**: `GET /hls/{infoHash}/{fileID}/playlist.m3u8`
+tod-p2m uses a YAML configuration file and environment variables for flexible setup.
 
-   **Response**: Returns the HLS playlist in `.m3u8` format.
+### 5.1 Configuration File (config.yaml)
 
-### 4. **HLS Segment**
-   Provides a specific `.ts` segment of a video file for HLS streaming.
+```yaml
+server:
+  port: 8080
+  host: "0.0.0.0"
 
-   **Endpoint**: `GET /hls/{infoHash}/{fileID}/{segmentID}.ts`
+logging:
+  level: "info"
+  format: "json"
 
-### 5. **Stream Document**
-   Streams a document (PDF, TXT) from a torrent.
+torrent:
+  max_connections: 100
+  download_rate_limit: 0  # 0 means unlimited
+  upload_rate_limit: 0
+  cache_size: 100  # Number of torrents to keep in cache
+  cleanup_interval: "10m"
 
-   **Endpoint**: `GET /document/{infoHash}/{fileID}`
+streaming:
+  hls_segment_duration: 10
+  buffer_size: 1048576  # 1MB
 
-   **Response**: Returns the document for viewing or downloading.
+security:
+  enable_cors: true
+  allowed_origins: ["*"]
 
-### 6. **Stream Image**
-   Streams an image (JPEG, PNG) from a torrent.
+database:
+  type: "postgres"
+  dsn: "postgres://user:password@localhost/tod_p2m?sslmode=disable"
 
-   **Endpoint**: `GET /image/{infoHash}/{fileID}`
+redis:
+  address: "localhost:6379"
+  password: ""
+  db: 0
+```
 
-   **Response**: Returns the image for viewing or downloading.
+### 5.2 Environment Variables
 
-## Configuration
+Environment variables override config file settings. Use the prefix `TOD_P2M_` for all variables.
 
-The application can be configured using a YAML file or environment variables.
+Example:
+```bash
+export TOD_P2M_SERVER_PORT=9090
+export TOD_P2M_LOGGING_LEVEL=debug
+```
 
-- **port**: The port on which the API will run.
-- **log_level**: Log level for the application (e.g., `info`, `debug`).
-- **torrent_timeout**: Timeout for fetching torrent metadata.
-- **max_connections**: Maximum concurrent connections.
-- **download_rate_limit**: Rate limit for downloading in bytes per second (0 means unlimited).
-- **upload_rate_limit**: Rate limit for uploading in bytes per second (0 means unlimited).
-- **cache_size**: Maximum number of torrents to cache in memory.
-- **cleanup_interval**: Interval for cleaning up inactive torrents.
-- **hls_segment_duration**: Duration in seconds for each HLS segment.
+## 6. API Reference
 
-## Error Handling
+Detailed API documentation is available in the [API Reference](docs/API.md) document. Here's a summary of the main endpoints:
 
-All errors are returned in JSON format with appropriate HTTP status codes. Example:
+- `GET /torrent/{infoHash}`: Retrieve torrent metadata
+- `GET /stream/{infoHash}/{fileID}`: Stream a file via HTTP
+- `GET /hls/{infoHash}/{fileID}/playlist.m3u8`: Get HLS playlist
+- `GET /hls/{infoHash}/{fileID}/{segmentID}.ts`: Get HLS segment
+- `GET /document/{infoHash}/{fileID}`: Stream a document
+- `GET /image/{infoHash}/{fileID}`: Stream an image
 
+## 7. Usage Examples
+
+### 7.1 Streaming a Video
+
+```javascript
+const videoPlayer = document.getElementById('video-player');
+const infoHash = '1234567890abcdef1234567890abcdef12345678';
+const fileID = 0;
+
+videoPlayer.src = `http://localhost:8080/hls/${infoHash}/${fileID}/playlist.m3u8`;
+videoPlayer.play();
+```
+
+### 7.2 Fetching Torrent Metadata
+
+```bash
+curl http://localhost:8080/torrent/1234567890abcdef1234567890abcdef12345678
+```
+
+Response:
 ```json
 {
-  "error": "File not found"
+  "infoHash": "1234567890abcdef1234567890abcdef12345678",
+  "name": "Big Buck Bunny",
+  "files": [
+    {
+      "id": 0,
+      "name": "big_buck_bunny.mp4",
+      "size": 276445467,
+      "progress": 0.15
+    }
+  ]
 }
 ```
 
-## Logging
+## 8. Performance Optimization
 
-The application uses **zerolog** for structured and high-performance logging. The log level can be set in the configuration file to control verbosity.
+tod-p2m implements several strategies to ensure high performance and efficient resource utilization:
 
-## Performance Optimization
+### 8.1 Caching
 
-- **Rate Limiting**: Configurable download and upload limits for controlling bandwidth.
-- **Torrent Caching**: Inactive torrents are automatically cleaned up to free resources.
-- **Concurrency**: Designed to handle high levels of concurrent connections without significant performance degradation.
+- In-memory caching of frequently accessed torrent metadata
+- Disk caching of popular content pieces to reduce network overhead
 
-## Contributing
+### 8.2 Connection Pooling
 
-Contributions are welcome! Please fork the repository and submit a pull request with your proposed changes.
+- Reuse of BitTorrent peer connections to minimize handshake overhead
+- Database connection pooling for efficient resource management
 
-1. Fork the project
-2. Create your feature branch (`git checkout -b feature/your-feature`)
-3. Commit your changes (`git commit -m 'Add some feature'`)
-4. Push to the branch (`git push origin feature/your-feature`)
-5. Open a pull request
+### 8.3 Asynchronous Processing
 
-## License
+- Non-blocking I/O operations leveraging Go's goroutines
+- Parallel processing of multiple torrent pieces
 
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+### 8.4 Load Balancing
 
-## Contact
+- Round-robin DNS for distributing incoming requests across multiple instances
+- Consistent hashing for efficient content distribution in clustered deployments
 
-For any inquiries or support, feel free to reach out to [your-email@example.com](mailto:osvaloismtz@gmail.com).
+## 9. Security Considerations
+
+### 9.1 Input Validation
+
+All user inputs, including infoHashes and file IDs, are strictly validated to prevent injection attacks.
+
+### 9.2 Rate Limiting
+
+IP-based rate limiting is implemented to prevent abuse and ensure fair usage.
+
+### 9.3 HTTPS
+
+HTTPS is strongly recommended for production deployments. Refer to [HTTPS Setup Guide](docs/https-setup.md) for implementation details.
+
+### 9.4 Access Control
+
+Implement appropriate authentication and authorization mechanisms when deploying in production environments.
+
+## 10. Monitoring and Logging
+
+### 10.1 Logging
+
+tod-p2m uses structured logging with zerolog. Log levels are configurable, and logs can be easily integrated with log aggregation systems like ELK stack or Splunk.
+
+### 10.2 Metrics
+
+Key metrics are exposed via a `/metrics` endpoint in Prometheus format, including:
+
+- Active connections
+- Torrents in cache
+- Bandwidth usage
+- Request latencies
+
+### 10.3 Health Checks
+
+A `/health` endpoint is provided for monitoring the application's health status.
+
+## 11. Testing Strategy
+
+### 11.1 Unit Testing
+
+Run unit tests with:
+```bash
+go test ./...
+```
+
+### 11.2 Integration Testing
+
+Run integration tests with:
+```bash
+go test -tags=integration ./...
+```
+
+### 11.3 Load Testing
+
+Refer to the [Load Testing Guide](docs/load-testing.md) for instructions on performing load tests using tools like Apache JMeter or Gatling.
+
+## 12. Deployment
+
+### 12.1 Containerized Deployment
+
+Refer to the [Docker Deployment Guide](docs/docker-deployment.md) for detailed instructions on deploying tod-p2m using Docker.
+
+### 12.2 Cloud Deployment
+
+Guidelines for deploying on major cloud platforms:
+- [AWS Deployment Guide](docs/aws-deployment.md)
+- [Google Cloud Deployment Guide](docs/gcp-deployment.md)
+- [Azure Deployment Guide](docs/azure-deployment.md)
+
+## 13. Contributing
+
+We welcome contributions to tod-p2m! Please refer to our [Contributing Guidelines](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+
+## 14. Versioning
+
+We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/osvalois/tod-p2m/tags).
+
+## 15. License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 16. Acknowledgments
+
+- The [anacrolix/torrent](https://github.com/anacrolix/torrent) library for providing the core BitTorrent functionality.
+- The Go community for their excellent libraries and tools.
+
+## 17. Support and Contact
+
+For support, please open an issue in the GitHub repository or contact the maintainers at [osvaloismtz@gmail.com](mailto:osvaloismtz@gmail.com).
 
 ---
 
-This application is designed with scalability and flexibility in mind, ensuring smooth media streaming and efficient torrent management. Happy streaming!
+tod-p2m is continually evolving to meet the demands of modern content delivery. We encourage community feedback and contributions to help make this project even better.
