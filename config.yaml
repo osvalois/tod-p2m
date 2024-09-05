@@ -1,0 +1,8 @@
+port: "8080"
+log_level: "info"
+torrent_timeout: "30s"
+max_connections: 100
+download_rate_limit: 0
+upload_rate_limit: 0
+cache_size: 100
+cleanup_interval: "10m"

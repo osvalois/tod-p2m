@@ -2,565 +2,514 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
+	"io"
 	"net/http"
+	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anacrolix/torrent"
-	"github.com/deflix-tv/imdb2torrent"
-	"github.com/gocolly/colly"
-	"github.com/gorilla/handlers"
-	"github.com/gorilla/mux"
-	"github.com/odwrtw/tpb"
-	"github.com/skratchdot/open-golang/open"
-	"go.uber.org/zap"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	"github.com/go-chi/render"
+	"github.com/rs/zerolog"
+	"github.com/spf13/viper"
+	"golang.org/x/time/rate"
 )
 
-var torrentInfo *torrent.Torrent
-var selectedFile *SelectedFileInfo
-
-type EpisodeInfo struct {
-	Season    int    `json:"season"`
-	Episode   int    `json:"episode"`
-	Title     string `json:"title"`
-	Quality   string `json:"quality"`
-	InfoHash  string `json:"infoHash"`
-	MagnetURL string `json:"magnetURL"`
+// Config holds the application configuration
+type Config struct {
+	Port               string        `mapstructure:"port"`
+	LogLevel           string        `mapstructure:"log_level"`
+	TorrentTimeout     time.Duration `mapstructure:"torrent_timeout"`
+	MaxConnections     int           `mapstructure:"max_connections"`
+	DownloadRateLimit  int64         `mapstructure:"download_rate_limit"`
+	UploadRateLimit    int64         `mapstructure:"upload_rate_limit"`
+	CacheSize          int           `mapstructure:"cache_size"`
+	CleanupInterval    time.Duration `mapstructure:"cleanup_interval"`
+	HLSSegmentDuration int           `mapstructure:"hls_segment_duration"`
 }
 
-type Result struct {
-	Title     string `json:"title"`
-	Quality   string `json:"quality"`
-	InfoHash  string `json:"infoHash"`
-	MagnetURL string `json:"magnetURL"`
+// App represents the application
+type App struct {
+	config        *Config
+	router        *chi.Mux
+	torrentClient *torrent.Client
+	cache         *sync.Map
+	logger        zerolog.Logger
 }
 
-type SelectedFileInfo struct {
-	ID        int
-	Name      string
-	Sha       string
-	Size      int64
-	Extension string
-	Category  string
+// TorrentInfo represents information about a torrent
+type TorrentInfo struct {
+	InfoHash string     `json:"infoHash"`
+	Name     string     `json:"name"`
+	Files    []FileInfo `json:"files"`
+}
+
+// FileInfo represents information about a file in a torrent
+type FileInfo struct {
+	ID       int     `json:"id"`
+	Name     string  `json:"name"`
+	Size     int64   `json:"size"`
+	Progress float64 `json:"progress"`
 }
 
 func main() {
-	clientConfig := torrent.NewDefaultClientConfig()
-	clientConfig.DataDir = "/tmp"
-	client, err := torrent.NewClient(clientConfig)
-	if err != nil {
-		log.Fatal(err)
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
-	defer client.Close()
+}
 
-	searchClient := tpb.New(
-		"https://apibay.org",
-		"https://1337x.to",
-		"https://yts.to",
-	)
+func run() error {
+	config, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
 
-	r := mux.NewRouter()
-	r.HandleFunc("/search/seeders", searchBySeedersHandler(searchClient)).Methods("GET")
+	logger := setupLogging(config.LogLevel)
 
-	r.HandleFunc("/series/sources/{imdbID}", func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		imdbID := vars["imdbID"]
-		seasonStr := r.FormValue("season")
-		season, err := strconv.Atoi(seasonStr)
-		if err != nil {
-			responseWithError(w, "El parámetro 'season' debe ser un número entero", http.StatusBadRequest)
-			return
+	app, err := NewApp(config, logger)
+	if err != nil {
+		return fmt.Errorf("failed to initialize application: %w", err)
+	}
+
+	logger.Info().Str("port", config.Port).Msg("Starting server")
+	return app.Serve()
+}
+
+func loadConfig() (*Config, error) {
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+	viper.AddConfigPath(".")
+	viper.AutomaticEnv()
+
+	viper.SetDefault("port", "8080")
+	viper.SetDefault("log_level", "info")
+	viper.SetDefault("torrent_timeout", "30s")
+	viper.SetDefault("max_connections", 100)
+	viper.SetDefault("download_rate_limit", 0)
+	viper.SetDefault("upload_rate_limit", 0)
+	viper.SetDefault("cache_size", 100)
+	viper.SetDefault("cleanup_interval", "10m")
+	viper.SetDefault("hls_segment_duration", 10)
+
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
+	}
 
-		if imdbID == "" {
-			responseWithError(w, "El parámetro 'imdbID' es requerido", http.StatusBadRequest)
-			return
-		}
+	var config Config
+	if err := viper.Unmarshal(&config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
 
-		imdbURL := "https://www.imdb.com/title/" + imdbID + "/"
-		imdbInfo, err := scrapeIMDB(imdbURL)
-		if err != nil {
-			responseWithError(w, "Error al obtener información de IMDb", http.StatusInternalServerError)
-			return
-		}
-		imdbTitle, ok := imdbInfo["title"].(string)
-		//imdbYear, ok := imdbInfo["year"].(string)
-		if !ok {
-			responseWithError(w, "Error obtaining IMDb title", http.StatusInternalServerError)
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		torrents, err := searchClient.Search(ctx, imdbTitle, &tpb.SearchOptions{
-			Category: 208,
+	return &config, nil
+}
+
+func setupLogging(level string) zerolog.Logger {
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	logLevel, err := zerolog.ParseLevel(level)
+	if err != nil {
+		logLevel = zerolog.InfoLevel
+	}
+	return zerolog.New(os.Stdout).With().Timestamp().Logger().Level(logLevel)
+}
+
+func NewApp(config *Config, logger zerolog.Logger) (*App, error) {
+	torrentClient, err := newTorrentClient(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create torrent client: %w", err)
+	}
+
+	app := &App{
+		config:        config,
+		router:        chi.NewRouter(),
+		torrentClient: torrentClient,
+		cache:         &sync.Map{},
+		logger:        logger,
+	}
+
+	app.setupRoutes()
+	go app.cleanupTorrents()
+
+	return app, nil
+}
+
+func newTorrentClient(config *Config) (*torrent.Client, error) {
+	cfg := torrent.NewDefaultClientConfig()
+	cfg.DataDir = ""
+	cfg.NoUpload = false
+	cfg.DisableTrackers = false
+	cfg.NoDHT = false
+	cfg.DisableTCP = false
+	cfg.DisableUTP = false
+	cfg.EstablishedConnsPerTorrent = 30
+	cfg.HalfOpenConnsPerTorrent = 25
+	cfg.TorrentPeersHighWater = 500
+	cfg.TorrentPeersLowWater = 50
+	cfg.Seed = true
+
+	if config.DownloadRateLimit > 0 {
+		cfg.DownloadRateLimiter = rate.NewLimiter(rate.Limit(config.DownloadRateLimit), int(config.DownloadRateLimit))
+	}
+	if config.UploadRateLimit > 0 {
+		cfg.UploadRateLimiter = rate.NewLimiter(rate.Limit(config.UploadRateLimit), int(config.UploadRateLimit))
+	}
+
+	return torrent.NewClient(cfg)
+}
+
+func (a *App) setupRoutes() {
+	a.router.Use(middleware.RequestID)
+	a.router.Use(middleware.RealIP)
+	a.router.Use(middleware.Logger)
+	a.router.Use(middleware.Recoverer)
+	a.router.Use(middleware.Timeout(60 * time.Second))
+	a.router.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
+
+	a.router.Get("/torrent/{infoHash}", a.getTorrentInfoHandler)
+	a.router.Get("/stream/{infoHash}/{fileID}", a.streamHandler)
+	a.router.Get("/hls/{infoHash}/{fileID}/playlist.m3u8", a.hlsPlaylistHandler)
+	a.router.Get("/hls/{infoHash}/{fileID}/{segmentID}.ts", a.hlsSegmentHandler)
+}
+
+func (a *App) Serve() error {
+	return http.ListenAndServe(":"+a.config.Port, a.router)
+}
+
+func (a *App) getTorrentInfoHandler(w http.ResponseWriter, r *http.Request) {
+	infoHash := chi.URLParam(r, "infoHash")
+
+	t, err := a.getTorrent(infoHash)
+	if err != nil {
+		a.logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, map[string]string{"error": err.Error()})
+		return
+	}
+
+	info := TorrentInfo{
+		InfoHash: t.InfoHash().String(),
+		Name:     t.Name(),
+		Files:    make([]FileInfo, 0, len(t.Files())),
+	}
+
+	for i, f := range t.Files() {
+		info.Files = append(info.Files, FileInfo{
+			ID:       i,
+			Name:     f.DisplayPath(),
+			Size:     f.Length(),
+			Progress: float64(f.BytesCompleted()) / float64(f.Length()),
 		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	render.JSON(w, r, info)
+}
+
+func (a *App) streamHandler(w http.ResponseWriter, r *http.Request) {
+	infoHash := chi.URLParam(r, "infoHash")
+	fileIDStr := chi.URLParam(r, "fileID")
+
+	fileID, err := strconv.Atoi(fileIDStr)
+	if err != nil {
+		a.logger.Error().Err(err).Str("fileID", fileIDStr).Msg("Invalid file ID")
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, map[string]string{"error": "Invalid file ID"})
+		return
+	}
+
+	t, err := a.getTorrent(infoHash)
+	if err != nil {
+		a.logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, map[string]string{"error": "Failed to get torrent"})
+		return
+	}
+
+	if fileID < 0 || fileID >= len(t.Files()) {
+		a.logger.Error().Int("fileID", fileID).Msg("File not found")
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, map[string]string{"error": "File not found"})
+		return
+	}
+
+	file := t.Files()[fileID]
+	reader := file.NewReader()
+	defer reader.Close()
+
+	fileName := filepath.Base(file.DisplayPath())
+	fileExt := filepath.Ext(fileName)
+	mimeType := getMIMEType(fileExt)
+
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, fileName))
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader != "" {
+		if err := handleRangeRequest(w, r, reader, file.Length(), mimeType); err != nil {
+			a.logger.Error().Err(err).Msg("Failed to handle range request")
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-		var filteredTorrents []*tpb.Torrent
+	} else {
+		w.Header().Set("Content-Length", strconv.FormatInt(file.Length(), 10))
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(w, reader); err != nil {
+			a.logger.Error().Err(err).Msg("Failed to stream file")
+		}
+	}
+}
 
+func handleRangeRequest(w http.ResponseWriter, r *http.Request, reader io.ReadSeeker, fileSize int64, mimeType string) error {
+	rangeHeader := r.Header.Get("Range")
+	rangeParts := strings.Split(strings.TrimPrefix(rangeHeader, "bytes="), "-")
+	if len(rangeParts) != 2 {
+		return fmt.Errorf("invalid range header")
+	}
+
+	start, err := strconv.ParseInt(rangeParts[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid range start: %w", err)
+	}
+
+	var end int64
+	if rangeParts[1] != "" {
+		end, err = strconv.ParseInt(rangeParts[1], 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid range end: %w", err)
+		}
+	} else {
+		end = fileSize - 1
+	}
+
+	if start >= fileSize || end >= fileSize || start > end {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		return nil
+	}
+
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+	w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+	w.WriteHeader(http.StatusPartialContent)
+
+	_, err = reader.Seek(start, io.SeekStart)
+	if err != nil {
+		return fmt.Errorf("failed to seek: %w", err)
+	}
+
+	_, err = io.CopyN(w, reader, end-start+1)
+	if err != nil {
+		return fmt.Errorf("failed to copy range: %w", err)
+	}
+
+	return nil
+}
+
+func (a *App) hlsPlaylistHandler(w http.ResponseWriter, r *http.Request) {
+	infoHash := chi.URLParam(r, "infoHash")
+	fileIDStr := chi.URLParam(r, "fileID")
+
+	fileID, err := strconv.Atoi(fileIDStr)
+	if err != nil {
+		a.logger.Error().Err(err).Str("fileID", fileIDStr).Msg("Invalid file ID")
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, map[string]string{"error": "Invalid file ID"})
+		return
+	}
+
+	t, err := a.getTorrent(infoHash)
+	if err != nil {
+		a.logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, map[string]string{"error": "Failed to get torrent"})
+		return
+	}
+
+	if fileID < 0 || fileID >= len(t.Files()) {
+		a.logger.Error().Int("fileID", fileID).Msg("File not found")
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, map[string]string{"error": "File not found"})
+		return
+	}
+
+	file := t.Files()[fileID]
+	fileSize := file.Length()
+	segmentDuration := a.config.HLSSegmentDuration
+	segmentCount := int(fileSize / (10 * 1024 * 1024)) // Assuming 10MB segments
+
+	w.Header().Set("Content-Type", "application/x-mpegURL")
+	w.WriteHeader(http.StatusOK)
+
+	fmt.Fprintf(w, "#EXTM3U\n")
+	fmt.Fprintf(w, "#EXT-X-VERSION:3\n")
+	fmt.Fprintf(w, "#EXT-X-TARGETDURATION:%d\n", segmentDuration)
+	fmt.Fprintf(w, "#EXT-X-MEDIA-SEQUENCE:0\n")
+
+	for i := 0; i < segmentCount; i++ {
+		fmt.Fprintf(w, "#EXTINF:%d.0,\n", segmentDuration)
+		fmt.Fprintf(w, "%d.ts\n", i)
+	}
+
+	fmt.Fprintf(w, "#EXT-X-ENDLIST\n")
+}
+
+func (a *App) hlsSegmentHandler(w http.ResponseWriter, r *http.Request) {
+	infoHash := chi.URLParam(r, "infoHash")
+	fileIDStr := chi.URLParam(r, "fileID")
+	segmentIDStr := chi.URLParam(r, "segmentID")
+
+	fileID, err := strconv.Atoi(fileIDStr)
+	if err != nil {
+		a.logger.Error().Err(err).Str("fileID", fileIDStr).Msg("Invalid file ID")
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, map[string]string{"error": "Invalid file ID"})
+		return
+	}
+
+	segmentID, err := strconv.Atoi(segmentIDStr)
+	if err != nil {
+		a.logger.Error().Err(err).Str("segmentID", segmentIDStr).Msg("Invalid segment ID")
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, map[string]string{"error": "Invalid segment ID"})
+		return
+	}
+
+	t, err := a.getTorrent(infoHash)
+	if err != nil {
+		a.logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, map[string]string{"error": "Failed to get torrent"})
+		return
+	}
+
+	if fileID < 0 || fileID >= len(t.Files()) {
+		a.logger.Error().Int("fileID", fileID).Msg("File not found")
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, map[string]string{"error": "File not found"})
+		return
+	}
+
+	file := t.Files()[fileID]
+	segmentSize := int64(10 * 1024 * 1024) // 10MB segment size
+	offset := int64(segmentID) * segmentSize
+
+	if offset >= file.Length() {
+		a.logger.Error().Int("segmentID", segmentID).Msg("Segment not found")
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, map[string]string{"error": "Segment not found"})
+		return
+	}
+
+	reader := file.NewReader()
+	defer reader.Close()
+
+	_, err = reader.Seek(offset, io.SeekStart)
+	if err != nil {
+		a.logger.Error().Err(err).Msg("Failed to seek to segment")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, map[string]string{"error": "Failed to seek to segment"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "video/MP2T")
+	w.WriteHeader(http.StatusOK)
+
+	_, err = io.CopyN(w, reader, segmentSize)
+	if err != nil && err != io.EOF {
+		a.logger.Error().Err(err).Msg("Failed to stream segment")
+	}
+}
+
+func (a *App) getTorrent(infoHash string) (*torrent.Torrent, error) {
+	// Verifica si el infoHash ya tiene el prefijo "magnet:"
+	if !strings.HasPrefix(infoHash, "magnet:") {
+		// Si no lo tiene, añade el prefijo
+		infoHash = "magnet:?xt=urn:btih:" + infoHash
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), a.config.TorrentTimeout)
+	defer cancel()
+
+	t, err := a.torrentClient.AddMagnet(infoHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add magnet: %w", err)
+	}
+
+	if t == nil {
+		return nil, fmt.Errorf("torrent is nil after adding magnet")
+	}
+
+	select {
+	case <-t.GotInfo():
+		return t, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("timeout waiting for torrent info")
+	case <-t.Closed():
+		return nil, fmt.Errorf("torrent was closed before getting info")
+	}
+}
+
+func (a *App) cleanupTorrents() {
+	ticker := time.NewTicker(a.config.CleanupInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		torrents := a.torrentClient.Torrents()
 		for _, t := range torrents {
-			// Utiliza la función extractSeasonEpisode para obtener la información de temporada y episodio
-			info, extractErr := extractSeasonEpisode(t.Name, season)
-			if extractErr == nil && (season == 0 || info.Season == season) {
-				// Agrega el torrent a la lista filtrada
-				filteredTorrents = append(filteredTorrents, t)
-			}
-		}
-
-		// Ordenar torrents filtrados por seeders (mayor a menor)
-		sort.Slice(filteredTorrents, func(i, j int) bool {
-			return filteredTorrents[i].Seeders > filteredTorrents[j].Seeders
-		})
-
-		// Write the response as JSON
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(filteredTorrents)
-
-	}).Methods("GET")
-
-	r.HandleFunc("/movies/sources/{imdbID}", func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		imdbID := vars["imdbID"]
-		if imdbID == "" {
-			responseWithError(w, "El parámetro 'imdbID' es requerido", http.StatusBadRequest)
-			return
-		}
-		imdbClient := imdb2torrent.NewYTSclient(imdb2torrent.DefaultYTSclientOpts, imdb2torrent.NewInMemoryCache(), zap.NewNop(), false)
-
-		// Buscar torrents para la película con el IMDb ID proporcionado
-		ytTorrents, err := imdbClient.FindMovie(context.Background(), imdbID)
-		imdbURL := "https://www.imdb.com/title/" + imdbID + "/"
-		imdbInfo, err := scrapeIMDB(imdbURL)
-		if err != nil {
-			responseWithError(w, "Error al obtener información de IMDb", http.StatusInternalServerError)
-			return
-		}
-
-		// Obtain the IMDb title from the map
-		imdbTitle, ok := imdbInfo["title"].(string)
-		imdbYear, ok := imdbInfo["year"].(string)
-		if !ok {
-			responseWithError(w, "Error obtaining IMDb title", http.StatusInternalServerError)
-			return
-		}
-		// Puedes crear un contexto para cancelar la búsqueda
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		torrents, err := searchClient.Search(ctx, imdbTitle, &tpb.SearchOptions{
-			Category: 0,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Ordenar torrents por seeders (mayor a menor)
-		sort.Slice(torrents, func(i, j int) bool {
-			return torrents[i].Seeders > torrents[j].Seeders
-		})
-
-		// Create a common structure for both sources
-		var results []Result
-
-		// Map IMDb data to TorrentInfo structure for source 0 (ytTorrents)
-		for _, yt := range ytTorrents {
-			result := Result{
-				Title:     yt.Title,
-				Quality:   yt.Quality,
-				InfoHash:  yt.InfoHash,
-				MagnetURL: yt.MagnetURL,
-			}
-			results = append(results, result)
-		}
-		minSeeders := 3
-
-		for _, t := range torrents {
-			if t.Seeders >= minSeeders {
-				if strings.Contains(t.Name, imdbYear) {
-					quality := deduceQuality(t.Name)
-					result := Result{
-						Title:     imdbTitle,
-						Quality:   quality,
-						InfoHash:  t.InfoHash,
-						MagnetURL: t.Magnet(),
+			select {
+			case <-t.Closed():
+				// Torrent is already closed, try to remove it
+				if method := reflect.ValueOf(a.torrentClient).MethodByName("RemoveTorrent"); method.IsValid() {
+					method.Call([]reflect.Value{reflect.ValueOf(t.InfoHash())})
+				}
+			default:
+				// Check if the torrent is inactive
+				if t.BytesCompleted() == t.Length() {
+					if method := reflect.ValueOf(t).MethodByName("AddedTime"); method.IsValid() {
+						addedTime := method.Call(nil)[0].Interface().(time.Time)
+						if time.Since(addedTime) > 30*time.Minute {
+							a.logger.Info().Str("infoHash", t.InfoHash().String()).Msg("Removing completed and inactive torrent")
+							if dropMethod := reflect.ValueOf(t).MethodByName("Drop"); dropMethod.IsValid() {
+								dropMethod.Call(nil)
+							}
+						}
 					}
-					results = append(results, result)
 				}
 			}
 		}
-
-		// Create a response structure to include both IMDb information and torrents
-		mirrorsResponse := map[string]interface{}{
-			"message": "Found",
-			"mirrors": results,
-		}
-
-		// Write the response as JSON
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(mirrorsResponse)
-	}).Methods("GET")
-
-	r.HandleFunc("/{sha}", func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		sha := vars["sha"]
-		if sha == "" {
-			responseWithError(w, "El parámetro 'sha' es requerido", http.StatusBadRequest)
-			return
-		}
-
-		torrentURL := "magnet:?xt=urn:btih:" + sha
-
-		torrentInfo, err = client.AddMagnet(torrentURL)
-		if err != nil {
-			responseWithError(w, "Error al agregar el torrent", http.StatusInternalServerError)
-			return
-		}
-
-		<-torrentInfo.GotInfo()
-
-		filesInfo := make([]SelectedFileInfo, 0)
-		for idx, file := range torrentInfo.Files() {
-			filesInfo = append(filesInfo, SelectedFileInfo{
-				ID:        idx,
-				Name:      file.Path(),
-				Sha:       torrentInfo.InfoHash().HexString(),
-				Size:      file.Length(),
-				Extension: strings.TrimPrefix(filepath.Ext(file.Path()), "."),
-				Category:  getCategory(strings.TrimPrefix(filepath.Ext(file.Path()), ".")),
-			})
-		}
-
-		responseWithData(w, "OK", filesInfo)
-	}).Methods("GET")
-
-	r.HandleFunc("/{sha}/{id}", func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		sha := vars["sha"]
-		id := vars["id"]
-
-		if len(sha) != 40 {
-			http.Error(w, "SHA inválido", http.StatusBadRequest)
-			return
-		}
-
-		fileIndex, err := strconv.Atoi(id)
-		if err != nil {
-			http.Error(w, "Índice de archivo no válido", http.StatusBadRequest)
-			return
-		}
-
-		torrentURL := "magnet:?xt=urn:btih:" + sha
-		torrentInfo, err = client.AddMagnet(torrentURL)
-		if err != nil {
-			http.Error(w, "Error al agregar el torrent", http.StatusInternalServerError)
-			return
-		}
-
-		<-torrentInfo.GotInfo()
-
-		if fileIndex < 0 || fileIndex >= len(torrentInfo.Files()) {
-			http.Error(w, "Índice de archivo no válido", http.StatusBadRequest)
-			return
-		}
-
-		videoFile := torrentInfo.Files()[fileIndex]
-
-		ext := strings.TrimPrefix(filepath.Ext(videoFile.Path()), ".")
-		mimeType := getMimeType(ext)
-		w.Header().Set("Content-Type", mimeType)
-
-		reader := videoFile.NewReader()
-
-		http.ServeContent(w, r, videoFile.Path(), time.Time{}, reader)
-	}).Methods("GET")
-	
-
-	corsHandler := handlers.CORS(
-		handlers.AllowedOrigins([]string{"*"}),
-		handlers.AllowedMethods([]string{"GET"}),
-		handlers.AllowedHeaders([]string{"Content-Type"}),
-	)
-
-	err = http.ListenAndServe(":8080", corsHandler(r))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Println("Abriendo el navegador web en http://localhost:8080")
-	err = open.Run("http://localhost:8080")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	select {}
-}
-
-func extractSeasonEpisode(name string, requestedSeason int) (EpisodeInfo, error) {
-	// Convertir el nombre a minúsculas para hacer la búsqueda sin distinción entre mayúsculas y minúsculas
-	lowercaseName := strings.ToLower(name)
-
-	// Buscar patrones que indiquen temporada y episodio en el nombre de la serie
-	re := regexp.MustCompile(`(?:s|season)\D?(\d+)(?:e|episode)?(\d+)?`)
-	matches := re.FindStringSubmatch(lowercaseName)
-
-	if len(matches) >= 3 {
-		season, _ := strconv.Atoi(matches[1])
-		episode, _ := strconv.Atoi(matches[2])
-
-		// Verificar si la temporada coincide con la solicitada
-		if requestedSeason == 0 || season == requestedSeason {
-			return EpisodeInfo{Season: season, Episode: episode}, nil
-		}
-	}
-
-	// Si no se encuentra ninguna información, devolver un error
-	return EpisodeInfo{}, fmt.Errorf("no se pudo extraer la información de temporada y episodio del nombre")
-}
-
-func scrapeIMDB(url string) (map[string]interface{}, error) {
-	// Utilizando la biblioteca colly para el scraping
-	c := colly.NewCollector()
-
-	// Set headers to mimic a request from a browser in the USA
-	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
-		r.Headers.Set("Accept-Language", "en-US,en;q=0.9")
-	})
-
-	var imdbInfo = make(map[string]interface{})
-
-	// Buscando el título
-	c.OnHTML("h1 span.hero__primary-text", func(e *colly.HTMLElement) {
-		title := strings.TrimSpace(e.Text)
-		imdbInfo["title"] = title
-	})
-
-	// Buscando el año de lanzamiento
-	c.OnHTML("a.ipc-link--baseAlt[href*='/releaseinfo']", func(e *colly.HTMLElement) {
-		// Obtener el texto dentro del enlace
-		year := strings.TrimSpace(e.Text)
-		imdbInfo["year"] = year
-	})
-
-	// Buscando información adicional como clasificación y duración
-	c.OnHTML("ul.ipc-inline-list", func(e *colly.HTMLElement) {
-		// Recorriendo los elementos de la lista
-		e.ForEach("li", func(index int, li *colly.HTMLElement) {
-			switch index {
-			case 1:
-				// Clasificación
-				rating := strings.TrimSpace(li.Text)
-				imdbInfo["rating"] = rating
-			case 2:
-				// Duración
-				duration := strings.TrimSpace(li.Text)
-				imdbInfo["duration"] = duration
-			}
-		})
-	})
-
-	// Visitar la URL
-	err := c.Visit(url)
-	if err != nil {
-		return nil, err
-	}
-
-	return imdbInfo, nil
-}
-func searchBySeedersHandler(client *tpb.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Puedes crear un contexto para cancelar la búsqueda
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		// Extraer la consulta de búsqueda de los parámetros de la solicitud
-		query := r.FormValue("q")
-
-		// Extraer la categoría de los parámetros de la solicitud
-		categoryParam := r.FormValue("category")
-
-		var category tpb.TorrentCategory
-		if categoryParam != "" {
-			// Si se proporciona una categoría, utilizarla
-			categoryInt, err := strconv.Atoi(categoryParam)
-			if err != nil {
-				http.Error(w, "Invalid category parameter", http.StatusBadRequest)
-				return
-			}
-			category = tpb.TorrentCategory(categoryInt)
-		} else {
-			// Si no se proporciona la categoría, buscar en todas las categorías (incluyendo las no categorizadas)
-			category = 0 // Puedes asignar un valor específico que indique "todas las categorías" según la lógica de tu aplicación
-		}
-
-		// Buscar en la categoría especificada o en todas las categorías
-		torrents, err := client.Search(ctx, query, &tpb.SearchOptions{
-			Category: category,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Ordenar torrents por seeders (mayor a menor)
-		sort.Slice(torrents, func(i, j int) bool {
-			return torrents[i].Seeders > torrents[j].Seeders
-		})
-
-		// Escribir la respuesta JSON
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(torrents)
-	}
-}
-func searchHandler(client *tpb.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Puedes crear un contexto para cancelar la búsqueda
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		// Extraer la consulta de búsqueda de los parámetros de la solicitud
-		query := r.FormValue("q")
-
-		// Extraer la categoría de los parámetros de la solicitud
-		categoryParam := r.FormValue("category")
-
-		var category tpb.TorrentCategory
-		if categoryParam != "" {
-			// Si se proporciona una categoría, utilizarla
-			categoryInt, err := strconv.Atoi(categoryParam)
-			if err != nil {
-				http.Error(w, "Invalid category parameter", http.StatusBadRequest)
-				return
-			}
-			category = tpb.TorrentCategory(categoryInt)
-		} else {
-			// Si no se proporciona la categoría, buscar en todas las categorías (incluyendo las no categorizadas)
-			category = 0 // Puedes asignar un valor específico que indique "todas las categorías" según la lógica de tu aplicación
-		}
-
-		// Buscar en la categoría especificada o en todas las categorías
-		torrents, err := client.Search(ctx, query, &tpb.SearchOptions{
-			Category: category,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Ordenar torrents por seeders (mayor a menor)
-		sort.Slice(torrents, func(i, j int) bool {
-			return torrents[i].Seeders > torrents[j].Seeders
-		})
-
-		// Escribir la respuesta JSON
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(torrents)
 	}
 }
 
-// Utilidades
-func getMimeType(extension string) string {
-	switch extension {
-	case "mp4":
+func getMIMEType(fileExt string) string {
+	switch strings.ToLower(fileExt) {
+	case ".mp4", ".m4v":
 		return "video/mp4"
-	case "mkv":
-		return "video/x-matroska"
-	case "avi":
-		return "video/x-msvideo"
-	case "mov":
-		return "video/quicktime"
-	case "webm":
+	case ".webm":
 		return "video/webm"
-	case "flv":
-		return "video/x-flv"
-	case "wmv":
-		return "video/x-ms-wmv"
-	case "mp3":
+	case ".ogg":
+		return "video/ogg"
+	case ".mp3":
 		return "audio/mpeg"
-	case "ogg":
-		return "audio/ogg"
-	case "wav":
+	case ".wav":
 		return "audio/wav"
-	case "srt":
-		return "application/x-subrip"
-	case "ass":
-		return "application/x-subtitle-ass"
-	case "vtt":
-		return "text/vtt"
 	default:
 		return "application/octet-stream"
 	}
-}
-
-func getCategory(extension string) string {
-	switch extension {
-	case "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv":
-		return "Video"
-	case "mp3", "ogg", "wav":
-		return "Audio"
-	case "jpg", "jpeg", "png", "gif", "bmp":
-		return "Photo"
-	case "srt", "ass", "vtt":
-		return "Subtitles"
-	case "nes", "snes", "unif", "unf", "smc", "fig", "sfc", "gd3", "gd7", "dx2", "bsx", "swc", "z64", "n64", "pce", "iso", "ngp", "ngc", "ws", "wsc", "col", "cv", "d64", "nds", "gba", "gb":
-		return "Games"
-	case "pdf", "epub", "mobi":
-		return "Books"
-	default:
-		return "Otro"
-	}
-}
-
-// Modelos de respuesta
-func responseWithError(w http.ResponseWriter, message string, statusCode int) {
-	response := map[string]interface{}{
-		"message": message,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(response)
-}
-
-// Función para deducir la calidad y el tipo del título
-func deduceQuality(title string) string {
-	// Lista de posibles calidades y tipos
-	possibleQualities := []string{"720p", "1080p", "2160p", "480p", "360p", "HDRip", "WEB-DL", "BluRay"}
-
-	// Itera sobre las posibles calidades y tipos y verifica si alguno está presente en el título
-	for _, quality := range possibleQualities {
-		if strings.Contains(strings.ToLower(title), strings.ToLower(quality)) {
-			// Verifica si también hay un tipo asociado (como "web")
-			typeIndex := strings.Index(strings.ToLower(title), strings.ToLower(quality))
-			if typeIndex != -1 && typeIndex+len(quality)+2 < len(title) {
-				typeStr := strings.TrimSpace(title[typeIndex+len(quality) : typeIndex+len(quality)+2])
-				return fmt.Sprintf("%s (%s)", quality, typeStr)
-			}
-
-			// Si no hay un tipo, simplemente devuelve la calidad
-			return quality
-		}
-	}
-
-	// Si no se encuentra ninguna calidad específica, devolver una cadena vacía o un valor por defecto según sea necesario
-	return "Unknown"
-}
-
-func responseWithData(w http.ResponseWriter, message string, data interface{}) {
-	response := map[string]interface{}{
-		"message": message,
-		"data":    data,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
 }
