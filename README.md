@@ -79,10 +79,10 @@ tod-p2m is built on a modular, microservices-oriented architecture, ensuring sca
          │                     │                     │
          └─────────────────────┼─────────────────────┘
                                │
-                       ┌───────────────┐
-                       │   Database    │
-                       │  (Redis/SQL)  │
-                       └───────────────┘
+                       ┌───────────────────────┐
+                       │       Database        │
+                       │  (Redis/SQL/Storage)  │
+                       └───────────────────────┘
 ```
 
 ### 3.2 Component Descriptions
