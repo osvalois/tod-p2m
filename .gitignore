@@ -1,0 +1,50 @@
+# Binaries for programs and plugins
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Binaries built by Go
+/tod-p2m
+
+# Output of the Go coverage tool, specifically when used with LiteIDE
+*.coverprofile
+
+# Configuration files
+config.yaml
+config/*.yaml
+
+# Logs
+*.log
+logs/
+
+# Vendor dependencies (if not using Go modules)
+vendor/
+
+# Go workspace and dependency files
+go.sum
+go.mod
+
+# IDE/editor specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Cache and temporary files
+cache/
+tmp/
+*.tmp
+
+# HLS output
+*.m3u8
+*.ts
+
+# Test coverage result
+coverage.out
