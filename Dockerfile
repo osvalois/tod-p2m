@@ -20,19 +20,21 @@ RUN adduser \
     --uid "${UID}" \
     "${USER}"
 
-WORKDIR $GOPATH/src/mypackage/myapp/
+WORKDIR /app
 
-# Use modules
-COPY go.mod .
-COPY go.sum .
+# Copy the source code
+COPY . .
 
+# Initialize the Go module and create go.mod and go.sum
+RUN go mod init github.com/osvalois/tod-p2m
+RUN go mod tidy
+
+# Download and verify dependencies
 RUN go mod download
 RUN go mod verify
 
-COPY . .
-
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o /go/bin/app
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o /go/bin/app ./cmd/server
 
 # Final stage
 FROM scratch

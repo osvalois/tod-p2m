@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -49,6 +51,7 @@ type Manager struct {
 	semaphore    chan struct{}
 	ctx          context.Context
 	cancel       context.CancelFunc
+	tmpDir       string
 }
 
 type TorrentWrapper struct {
@@ -67,13 +70,20 @@ type pieceStats struct {
 func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	client, err := NewClient(cfg, log)
+	tmpDir := filepath.Join(os.TempDir(), "tod-p2m-tmp")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create tmp directory: %w", err)
+	}
+
+	client, err := NewClient(cfg, log, tmpDir)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create torrent client: %w", err)
 	}
 
-	cache, err := storage.NewFileStore(cfg.CacheSize, "/tmp/tod-p2m-cache")
+	cacheDir := filepath.Join(tmpDir, "cache")
+	cache, err := storage.NewFileStore(cfg.CacheSize, cacheDir)
 	if err != nil {
 		cancel()
 		client.Close()
@@ -90,6 +100,7 @@ func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
 		semaphore: make(chan struct{}, maxConcurrentTorrents),
 		ctx:       ctx,
 		cancel:    cancel,
+		tmpDir:    tmpDir,
 	}
 
 	go m.cleanupRoutine()
@@ -381,9 +392,17 @@ func (m *Manager) Close() error {
 	}
 
 	m.client.Close()
-	return m.cache.Close()
-}
+	if err := m.cache.Close(); err != nil {
+		m.Logger.Error().Err(err).Msg("Error closing cache")
+	}
 
+	// Clean up the temporary directory
+	if err := os.RemoveAll(m.tmpDir); err != nil {
+		m.Logger.Error().Err(err).Msg("Error removing temporary directory")
+	}
+
+	return nil
+}
 func (m *Manager) GetFile(infoHash string, fileIndex int) (io.ReadSeeker, error) {
 	t, err := m.GetTorrent(infoHash)
 	if err != nil {

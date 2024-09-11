@@ -1,5 +1,3 @@
-// File: internal/torrent/client.go
-
 package torrent
 
 import (
@@ -15,9 +13,9 @@ type Client struct {
 	logger zerolog.Logger
 }
 
-func NewClient(cfg *config.Config, logger zerolog.Logger) (*Client, error) {
+func NewClient(cfg *config.Config, logger zerolog.Logger, tmpDir string) (*Client, error) {
 	clientConfig := torrent.NewDefaultClientConfig()
-	clientConfig.DataDir = ""
+	clientConfig.DataDir = tmpDir
 	clientConfig.NoUpload = false
 	clientConfig.DisableTrackers = false
 	clientConfig.NoDHT = false
