@@ -31,7 +31,11 @@ else
     SED_INPLACE := sed -i
 endif
 
-.PHONY: all build clean deep-clean test coverage deps lint fmt run help init fix-imports remove-backups
+# Fly.io variables
+FLY_APP_NAME := $(shell fly status --json | jq -r '.Name')
+FLY_VOLUME_NAME := $(shell fly volumes list --json | jq -r '.[0].Name')
+
+.PHONY: all build clean deep-clean test coverage deps lint fmt run help init fix-imports remove-backups increase-volume increase-volume-20gb
 
 all: init fix-imports clean deps fmt lint test build
 
@@ -108,6 +112,46 @@ remove-backups:
 	@echo "Removing backup files..."
 	@rm -rf $(TEMP_DIR)
 
+increase-volume:
+	@echo "Increasing volume size..."
+	@if [ -z "$$FLY_VOLUME_SIZE" ]; then \
+		read -p "Enter the desired volume size in GB: " FLY_VOLUME_SIZE; \
+		if [ -z "$$FLY_VOLUME_SIZE" ]; then \
+			echo "Error: Volume size not provided."; \
+			exit 1; \
+		fi; \
+	fi
+	@echo "Current volume size:"
+	@fly volumes list
+	@echo "Increasing volume size to $$FLY_VOLUME_SIZE GB..."
+	@fly volumes extend $(FLY_VOLUME_NAME) --size $$FLY_VOLUME_SIZE
+	@echo "New volume size:"
+	@fly volumes list
+
+increase-volume-20gb:
+	@echo "Increasing volume size to 20 GB..."
+	@echo "Debugging information:"
+	@echo "App name: $(FLY_APP_NAME)"
+	@echo "Volume name: $(FLY_VOLUME_NAME)"
+	@echo "Current volumes:"
+	@fly volumes list
+	@if [ -z "$(FLY_VOLUME_NAME)" ]; then \
+		echo "Error: Unable to determine volume name."; \
+		echo "Please specify the volume name manually:"; \
+		read -p "Enter the volume name: " MANUAL_VOLUME_NAME; \
+		if [ -z "$$MANUAL_VOLUME_NAME" ]; then \
+			echo "No volume name provided. Exiting."; \
+			exit 1; \
+		fi; \
+		echo "Attempting to increase size of volume: $$MANUAL_VOLUME_NAME"; \
+		fly volumes extend $$MANUAL_VOLUME_NAME --size 20 || { echo "Failed to extend volume. Please check the volume name and your Fly.io permissions."; exit 1; }; \
+	else \
+		echo "Attempting to increase size of volume: $(FLY_VOLUME_NAME)"; \
+		fly volumes extend $(FLY_VOLUME_NAME) --size 20 || { echo "Failed to extend volume. Please check the volume name and your Fly.io permissions."; exit 1; }; \
+	fi
+	@echo "New volume size:"
+	@fly volumes list
+
 help:
 	@echo "Available commands:"
 	@echo "  make all          - Initialize module, fix imports, clean, get dependencies, format, lint, test, and build"
@@ -123,6 +167,8 @@ help:
 	@echo "  make init         - Initialize Go module (if not already initialized)"
 	@echo "  make fix-imports  - Fix import paths in all Go files"
 	@echo "  make remove-backups - Remove backup files"
+	@echo "  make increase-volume - Increase Fly.io volume size based on user input or FLY_VOLUME_SIZE environment variable"
+	@echo "  make increase-volume-20gb - Increase Fly.io volume size to 20 GB"
 	@echo "  make help         - Show this help message"
 
 # Default target

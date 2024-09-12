@@ -1,9 +1,33 @@
 port: "8080"
 log_level: "info"
-torrent_timeout: "60s"
-max_connections: 100
-download_rate_limit: 0  # 0 means no limit
-upload_rate_limit: 0    # 0 means no limit
-cache_size: 1000        # in MB
-cleanup_interval: "10m"
-hls_segment_duration: 10
+torrent_timeout: "120s"  # Aumentado para dar más tiempo a los torrents lentos
+max_connections: 500  # Aumentado para permitir más conexiones simultáneas
+download_rate_limit: 10485760  # 10 MB/s (ajusta según el ancho de banda disponible)
+upload_rate_limit: 5242880  # 5 MB/s (ajusta según el ancho de banda disponible)
+cache_size: 10000  # Aumentado para mejorar el rendimiento
+cleanup_interval: "30m"  # Reducido para una limpieza más frecuente
+hls_segment_duration: 6  # Reducido para una mejor experiencia de streaming
+download_dir: "/downloads"  # Cambiado a una ubicación más estándar
+keep_files: true  # Cambiado a true para mantener los archivos y mejorar el rendimiento en descargas repetidas
+max_download_time: "6h"  # Aumentado para permitir la descarga de archivos más grandes
+dht_node_count: 1000  # Añadido para mejorar la búsqueda de pares
+peer_id_prefix: "-TD2024-"  # Añadido para identificar tu cliente
+user_agent: "TorrentDownloader/2.0"  # Añadido para identificar tu cliente
+tcp_port: 6881  # Puerto TCP para conexiones entrantes
+udp_port: 6882  # Puerto UDP para DHT y uTP
+enable_upnp: true  # Habilitar UPnP para mapeo de puertos automático
+enable_dht: true  # Habilitar DHT para encontrar más pares
+enable_pex: true  # Habilitar PEX para intercambio de pares
+enable_lsd: true  # Habilitar LSD para descubrimiento local
+max_open_files: 1000  # Límite de archivos abiertos simultáneamente
+write_buffer_size: 2097152  # 2 MB buffer de escritura
+read_buffer_size: 2097152  # 2 MB buffer de lectura
+max_peers_per_torrent: 200  # Máximo número de pares por torrent
+max_active_torrents: 50  # Número máximo de torrents activos simultáneamente
+seed_ratio_limit: 2.0  # Ratio de seed antes de detenerse
+seed_time_limit: "24h"  # Tiempo máximo de seed
+piece_buffer_size: 262144  # 256 KB buffer por pieza
+enable_scrape: true  # Habilitar scrape para obtener estadísticas de torrents
+tracker_timeout: "30s"  # Timeout para las peticiones a los trackers
+enable_metadata_exchange: true  # Habilitar intercambio de metadatos
+max_metadata_size: 10485760  # 10 MB tamaño máximo de metadatos

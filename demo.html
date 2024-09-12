@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reproductor de Video HLS y MP4</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.10/hls.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        #videoContainer {
+            max-width: 800px;
+            width: 100%;
+        }
+        #videoPlayer {
+            width: 100%;
+        }
+        #urlInput {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        #loadButton {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        #statusMessage {
+            margin-top: 10px;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <h1>Reproductor de Video HLS y MP4</h1>
+    <div id="videoContainer">
+        <input type="text" id="urlInput" placeholder="Ingrese la URL del video (HLS o MP4)">
+        <button id="loadButton">Cargar Video</button>
+        <video id="videoPlayer" controls></video>
+        <div id="statusMessage"></div>
+    </div>
+
+    <script>
+        const videoPlayer = document.getElementById('videoPlayer');
+        const urlInput = document.getElementById('urlInput');
+        const loadButton = document.getElementById('loadButton');
+        const statusMessage = document.getElementById('statusMessage');
+
+        function updateStatus(message) {
+            statusMessage.textContent = message;
+        }
+
+        function loadVideo(videoUrl) {
+            if (videoUrl.endsWith('.m3u8') || videoUrl.includes('playlist.m3u8')) {
+                if (Hls.isSupported()) {
+                    updateStatus('Cargando stream HLS...');
+                    const hls = new Hls();
+                    hls.loadSource(videoUrl);
+                    hls.attachMedia(videoPlayer);
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        updateStatus('Stream HLS cargado. Listo para reproducir.');
+                        videoPlayer.play();
+                    });
+                    hls.on(Hls.Events.ERROR, (event, data) => {
+                        if (data.fatal) {
+                            updateStatus(`Error: ${data.type}. ${data.details}`);
+                        }
+                    });
+                } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+                    videoPlayer.src = videoUrl;
+                    updateStatus('Usando reproductor nativo para HLS.');
+                    videoPlayer.play();
+                } else {
+                    updateStatus('Este navegador no soporta HLS.');
+                }
+            } else {
+                videoPlayer.src = videoUrl;
+                updateStatus('Video MP4 cargado. Listo para reproducir.');
+                videoPlayer.play();
+            }
+        }
+
+        loadButton.addEventListener('click', () => {
+            const videoUrl = urlInput.value.trim();
+            if (videoUrl) {
+                loadVideo(videoUrl);
+            } else {
+                updateStatus('Por favor, ingrese una URL válida');
+            }
+        });
+
+        // Cargar automáticamente la URL proporcionada
+        urlInput.value = 'https://tod-p2m.fly.dev/hls/d2b91b9f10cb714918a2ede943a9c0f1970010e3/0/playlist.m3u8';
+        loadVideo(urlInput.value);
+    </script>
+</body>
+</html>

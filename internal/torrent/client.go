@@ -11,6 +11,7 @@ import (
 type Client struct {
 	*torrent.Client
 	logger zerolog.Logger
+	config *torrent.ClientConfig
 }
 
 func NewClient(cfg *config.Config, logger zerolog.Logger, tmpDir string) (*Client, error) {
@@ -42,5 +43,32 @@ func NewClient(cfg *config.Config, logger zerolog.Logger, tmpDir string) (*Clien
 	return &Client{
 		Client: client,
 		logger: logger,
+		config: clientConfig,
 	}, nil
+}
+
+// SetMaxConnections sets the maximum number of established connections per torrent
+func (c *Client) SetMaxConnections(maxConnections int) {
+	c.config.EstablishedConnsPerTorrent = maxConnections
+	// Note: This change won't affect existing torrents, only new ones
+}
+
+// SetDownloadLimit sets the download rate limit
+func (c *Client) SetDownloadLimit(downloadLimit int64) {
+	if downloadLimit > 0 {
+		c.config.DownloadRateLimiter = rate.NewLimiter(rate.Limit(downloadLimit), int(downloadLimit))
+	} else {
+		c.config.DownloadRateLimiter = nil
+	}
+	// Note: This change won't affect existing torrents, only new ones
+}
+
+// SetUploadLimit sets the upload rate limit
+func (c *Client) SetUploadLimit(uploadLimit int64) {
+	if uploadLimit > 0 {
+		c.config.UploadRateLimiter = rate.NewLimiter(rate.Limit(uploadLimit), int(uploadLimit))
+	} else {
+		c.config.UploadRateLimiter = nil
+	}
+	// Note: This change won't affect existing torrents, only new ones
 }

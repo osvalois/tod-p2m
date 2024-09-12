@@ -64,6 +64,31 @@ func (fs *FileStore) Store(key string, reader io.Reader, size int64) error {
 	return nil
 }
 
+func (fs *FileStore) Cleanup() error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	for fs.currentSize > fs.maxSize {
+		key, filePath, ok := fs.cache.RemoveOldest()
+		if !ok {
+			break
+		}
+
+		info, err := os.Stat(filePath.(string))
+		if err != nil {
+			return fmt.Errorf("failed to get file info during cleanup: %w", err)
+		}
+
+		if err := os.Remove(filePath.(string)); err != nil {
+			return fmt.Errorf("failed to remove file during cleanup: %w", err)
+		}
+
+		fs.currentSize -= info.Size()
+		fs.cache.Remove(key)
+	}
+
+	return nil
+}
 func (fs *FileStore) Get(key string) (io.ReadCloser, error) {
 	if filePath, ok := fs.cache.Get(key); ok {
 		file, err := os.Open(filePath.(string))
