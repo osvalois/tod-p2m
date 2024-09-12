@@ -184,7 +184,12 @@ func (m *Manager) manageTorrentInfo(wrapper *TorrentWrapper, infoHash string) {
 		wrapper.mu.Lock()
 		defer wrapper.mu.Unlock()
 		if wrapper.Info() != nil && !wrapper.Info().IsDir() {
-			close(wrapper.infoReady)
+			select {
+			case <-wrapper.infoReady:
+				// Channel already closed, do nothing
+			default:
+				close(wrapper.infoReady)
+			}
 			wrapper.pieceStats = make([]pieceStats, wrapper.NumPieces())
 			m.initializePiecePriorities(wrapper)
 		}
@@ -253,7 +258,7 @@ func (m *Manager) monitorTorrent(t *torrent.Torrent, infoHash string) {
 			lastAccessed := wrapper.lastAccessed
 			wrapper.mu.RUnlock()
 
-			if time.Since(lastAccessed) > torrentTimeout && t.BytesCompleted() == t.Length() {
+			if time.Since(lastAccessed) > torrentTimeout*2 && t.BytesCompleted() == t.Length() {
 				m.removeTorrent(infoHash)
 				return
 			}
@@ -284,6 +289,11 @@ func (m *Manager) updatePiecePriorities(wrapper *TorrentWrapper) {
 	defer wrapper.mu.Unlock()
 
 	numPieces := wrapper.NumPieces()
+	if numPieces == 0 {
+		m.Logger.Warn().Str("infoHash", wrapper.InfoHash().String()).Msg("Torrent has no pieces")
+		return
+	}
+
 	downloaded := wrapper.BytesCompleted()
 	total := wrapper.Length()
 
@@ -403,6 +413,7 @@ func (m *Manager) Close() error {
 
 	return nil
 }
+
 func (m *Manager) GetFile(infoHash string, fileIndex int) (io.ReadSeeker, error) {
 	t, err := m.GetTorrent(infoHash)
 	if err != nil {

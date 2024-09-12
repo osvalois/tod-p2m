@@ -1,55 +1,36 @@
-# Start from a golang alpine image
-FROM golang:1.17-alpine AS builder
+# Start from the latest golang base image
+FROM golang:latest AS builder
 
-# Install git and SSL ca certificates.
-# Git is required for fetching the dependencies.
-# Ca-certificates is required to call HTTPS endpoints.
-RUN apk update && apk add --no-cache git ca-certificates tzdata && update-ca-certificates
-
-# Create appuser
-ENV USER=appuser
-ENV UID=10001
-
-# See https://stackoverflow.com/a/55757473/12429735
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/nonexistent" \
-    --shell "/sbin/nologin" \
-    --no-create-home \
-    --uid "${UID}" \
-    "${USER}"
-
+# Set the Current Working Directory inside the container
 WORKDIR /app
 
-# Copy the source code
+# Copy go mod and sum files
+COPY go.mod go.sum ./
+
+# Download all dependencies
+RUN go mod download
+
+# Copy the source from the current directory to the Working Directory inside the container
 COPY . .
 
-# Initialize the Go module and create go.mod and go.sum
-RUN go mod init github.com/osvalois/tod-p2m
-RUN go mod tidy
+# Build the Go app
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o tod-p2m ./cmd/server
 
-# Download and verify dependencies
-RUN go mod download
-RUN go mod verify
+# Start a new stage from scratch
+FROM alpine:latest  
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o /go/bin/app ./cmd/server
+RUN apk --no-cache add ca-certificates
 
-# Final stage
-FROM scratch
+WORKDIR /root/
 
-# Import from builder.
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /etc/passwd /etc/passwd
-COPY --from=builder /etc/group /etc/group
+# Copy the Pre-built binary file from the previous stage
+COPY --from=builder /app/tod-p2m .
 
-# Copy our static executable
-COPY --from=builder /go/bin/app /go/bin/app
+# Copy the config file
+COPY config.yaml .
 
-# Use an unprivileged user.
-USER appuser:appuser
+# Expose port 8080 to the outside world
+EXPOSE 8080
 
-# Run the app binary.
-ENTRYPOINT ["/go/bin/app"]
+# Command to run the executable
+CMD ["./tod-p2m"]

@@ -13,20 +13,12 @@ tod-p2m
 # Output of the Go coverage tool, specifically when used with LiteIDE
 **/*.coverprofile
 
-# Configuration files
-**/config.yaml
-**/config/*.yaml
-
 # Logs
 **/*.log
 **/logs
 
 # Vendor dependencies (if not using Go modules)
 **/vendor
-
-# Go workspace and dependency files
-**/go.sum
-**/go.mod
 
 # IDE/editor specific files
 **/.vscode
@@ -63,10 +55,6 @@ tod-p2m
 **/*.o
 **/*.out
 **/*.exe
-
-# Ignorar archivos de dependencias
-**/go.mod
-**/go.sum
 
 # Ignorar archivos de Docker
 **/Dockerfile
