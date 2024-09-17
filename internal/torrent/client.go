@@ -50,6 +50,9 @@ func NewClient(cfg *config.Config, logger zerolog.Logger, tmpDir string) (*Clien
 // SetMaxConnections sets the maximum number of established connections per torrent
 func (c *Client) SetMaxConnections(maxConnections int) {
 	c.config.EstablishedConnsPerTorrent = maxConnections
+	c.config.HalfOpenConnsPerTorrent = maxConnections / 2
+	c.config.TorrentPeersHighWater = maxConnections * 2
+	c.config.TorrentPeersLowWater = maxConnections
 	// Note: This change won't affect existing torrents, only new ones
 }
 

@@ -137,3 +137,23 @@ func (fs *FileStore) Close() error {
 
 	return nil
 }
+func (fs *FileStore) CloseFile(key string) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	if filePath, ok := fs.cache.Get(key); ok {
+		file, err := os.Open(filePath.(string))
+		if err != nil {
+			return fmt.Errorf("failed to open file: %w", err)
+		}
+		defer file.Close()
+
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("failed to close file: %w", err)
+		}
+
+		fs.cache.Remove(key)
+		return nil
+	}
+	return fmt.Errorf("file not found in cache")
+}

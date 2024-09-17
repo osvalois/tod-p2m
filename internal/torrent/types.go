@@ -1,6 +1,30 @@
 package torrent
 
-import "time"
+import (
+	"context"
+	"sync"
+	"time"
+	"tod-p2m/internal/config"
+	"tod-p2m/internal/storage"
+
+	"github.com/anacrolix/torrent"
+	"github.com/rs/zerolog"
+	"golang.org/x/time/rate"
+)
+
+// TorrentWrapper extends torrent.Torrent with additional metadata
+type TorrentWrapper struct {
+	*torrent.Torrent
+	infoReady    chan struct{}
+	lastAccessed time.Time
+	pieceStats   []pieceStats
+	mu           sync.RWMutex
+}
+
+type pieceStats struct {
+	priority    torrent.PiecePriority
+	lastRequest time.Time
+}
 
 type TorrentInfo struct {
 	InfoHash string
@@ -25,3 +49,18 @@ const (
 	maxRetries            = 3
 	bufferSize            = 32 * 1024 // 32KB buffer for file operations
 )
+
+type Manager struct {
+	client       *Client
+	cache        *storage.FileStore // Cambiado de fileStore a cache
+	config       *config.Config
+	Logger       zerolog.Logger
+	mu           sync.RWMutex
+	torrents     map[string]*TorrentWrapper
+	lastAccessed sync.Map
+	limiter      *rate.Limiter
+	semaphore    chan struct{}
+	ctx          context.Context
+	cancel       context.CancelFunc
+	downloadDir  string
+}

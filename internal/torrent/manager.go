@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -16,20 +16,17 @@ import (
 	"tod-p2m/internal/storage"
 )
 
-// Manager handles the core functionality of torrent management
-type Manager struct {
-	client       *Client
-	cache        *storage.FileStore
-	config       *config.Config
-	Logger       zerolog.Logger
-	mu           sync.RWMutex
-	torrents     map[string]*TorrentWrapper
-	lastAccessed sync.Map
-	limiter      *rate.Limiter
-	semaphore    chan struct{}
-	ctx          context.Context
-	cancel       context.CancelFunc
-	downloadDir  string
+func (m *Manager) retryFileOperation(operation func() error, maxRetries int) error {
+	var err error
+	for i := 0; i < maxRetries; i++ {
+		err = operation()
+		if err == nil {
+			return nil
+		}
+		m.Logger.Warn().Err(err).Int("attempt", i+1).Msg("File operation failed, retrying")
+		time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
+	}
+	return fmt.Errorf("file operation failed after %d attempts: %w", maxRetries, err)
 }
 
 // NewManager creates and initializes a new Manager
@@ -98,9 +95,47 @@ func (m *Manager) Close() error {
 		m.Logger.Error().Err(err).Msg("Error closing cache")
 	}
 
-	if err := os.RemoveAll(m.downloadDir); err != nil {
-		m.Logger.Error().Err(err).Msg("Error removing temporary directory")
+	err := m.retryFileOperation(func() error {
+		return os.RemoveAll(m.downloadDir)
+	}, 3)
+
+	if err != nil {
+		m.Logger.Error().Err(err).Msg("Error removing temporary directory after retries")
 	}
 
 	return nil
+}
+func getInfoHashFromPath(path string) string {
+	base := filepath.Base(path)
+	parts := strings.Split(base, "_")
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return ""
+}
+func (m *Manager) handleBusyResource(path string) error {
+	m.Logger.Warn().Str("path", path).Msg("Resource busy, attempting to release")
+
+	infoHash := getInfoHashFromPath(path)
+	if infoHash != "" {
+		if err := m.cache.CloseFile(infoHash); err != nil {
+			m.Logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to close file in cache")
+		}
+	}
+
+	time.Sleep(1 * time.Second)
+
+	return m.retryFileOperation(func() error {
+		err := os.Remove(path)
+		if err != nil {
+			if os.IsPermission(err) {
+				chmodErr := os.Chmod(path, 0666)
+				if chmodErr != nil {
+					m.Logger.Error().Err(chmodErr).Str("path", path).Msg("Failed to change file permissions")
+				}
+				return os.Remove(path)
+			}
+		}
+		return err
+	}, maxRetries)
 }

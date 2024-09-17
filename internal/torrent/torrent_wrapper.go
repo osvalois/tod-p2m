@@ -1,25 +1,10 @@
 package torrent
 
 import (
-	"sync"
 	"time"
 
 	"github.com/anacrolix/torrent"
 )
-
-// TorrentWrapper extends torrent.Torrent with additional metadata
-type TorrentWrapper struct {
-	*torrent.Torrent
-	infoReady    chan struct{}
-	lastAccessed time.Time
-	pieceStats   []pieceStats
-	mu           sync.RWMutex
-}
-
-type pieceStats struct {
-	priority    torrent.PiecePriority
-	lastRequest time.Time
-}
 
 func (m *Manager) initializePiecePriorities(wrapper *TorrentWrapper) {
 	numPieces := wrapper.NumPieces()
