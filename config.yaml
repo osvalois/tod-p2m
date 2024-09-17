@@ -1,16 +1,16 @@
 port: "8080"
 log_level: "info"
-torrent_timeout: "180s"  # Aumentado para dar más tiempo a los torrents lentos
-max_connections: 2000  # Aumentado significativamente para manejar más usuarios concurrentes
+torrent_timeout: "180s"
+max_connections: 2000
 download_rate_limit: 104857600  # 100 MB/s (ajusta según el ancho de banda disponible)
-upload_rate_limit: 52428800  # 50 MB/s (ajusta según el ancho de banda disponible)
-cache_size: 50000  # Aumentado significativamente para mejorar el rendimiento
-cleanup_interval: "125m"  # Reducido para una limpieza más frecuente
-hls_segment_duration: 4  # Reducido para una mejor experiencia de streaming
-download_dir: "/tmp"  # Cambiado a un almacenamiento de alto rendimiento
-keep_files: true  # Mantener archivos para mejorar el rendimiento en descargas repetidas
-max_download_time: "12h"  # Aumentado para permitir la descarga de archivos más grandes
-dht_node_count: 2000  # Aumentado para mejorar la búsqueda de pares
+upload_rate_limit: 1024  # Reducido a 1 KB/s (prácticamente nulo)
+cache_size: 50000
+cleanup_interval: "125m"
+hls_segment_duration: 4
+download_dir: "/Users/oscarvalois/Downloads/torrents"
+keep_files: true
+max_download_time: "12h"
+dht_node_count: 2000
 peer_id_prefix: "-TD2024-"
 user_agent: "TorrentDownloader/2.1"
 tcp_port: 6881
@@ -19,34 +19,34 @@ enable_upnp: true
 enable_dht: true
 enable_pex: true
 enable_lsd: true
-max_open_files: 4096  # Aumentado para manejar más archivos simultáneamente
-write_buffer_size: 8388608  # 8 MB buffer de escritura
-read_buffer_size: 8388608  # 8 MB buffer de lectura
-max_peers_per_torrent: 300  # Aumentado para mejorar la velocidad de descarga
-max_active_torrents: 100  # Aumentado para manejar más torrents simultáneamente
-seed_ratio_limit: 2.5  # Aumentado ligeramente para mejorar la disponibilidad
-seed_time_limit: "36h"  # Aumentado para mejorar la disponibilidad
-piece_buffer_size: 524288  # 512 KB buffer por pieza
+max_open_files: 4096
+write_buffer_size: 8388608
+read_buffer_size: 8388608
+max_peers_per_torrent: 300
+max_active_torrents: 100
+seed_ratio_limit: 0.0001  # Reducido al mínimo
+seed_time_limit: "1m"  # Reducido a 1 minuto
+piece_buffer_size: 524288
 enable_scrape: true
-tracker_timeout: "45s"  # Aumentado para dar más tiempo a los trackers
+tracker_timeout: "45s"
 enable_metadata_exchange: true
-max_metadata_size: 20971520  # 20 MB tamaño máximo de metadatos
+max_metadata_size: 20971520
 
-# Nuevas configuraciones para mejorar el rendimiento y la escalabilidad
-connection_pool_size: 1000  # Tamaño del pool de conexiones
-max_incoming_connections: 1000  # Límite de conexiones entrantes
-max_outgoing_connections: 1000  # Límite de conexiones salientes
-read_cache_size: 67108864  # 64 MB caché de lectura
-write_cache_size: 67108864  # 64 MB caché de escritura
-max_piece_handlers: 100  # Manejadores de piezas simultáneos
-max_request_blocks: 250  # Bloques máximos por solicitud
-request_timeout: "20s"  # Timeout para solicitudes de piezas
-piece_timeout: "30s"  # Timeout para descargar una pieza completa
-max_peer_upload_slots: 4  # Slots de subida por peer
-max_peer_download_slots: 4  # Slots de descarga por peer
-max_active_downloads: 50  # Descargas activas simultáneas
-max_active_seeds: 50  # Seeds activos simultáneos
-enable_ip_filtering: true  # Habilitar filtrado de IPs
-ip_filter_file: "/etc/torrent/ipfilter.dat"  # Archivo de filtro de IPs
-enable_bandwidth_management: true  # Habilitar gestión de ancho de banda
-bandwidth_management_interval: "1s"  # Intervalo de actualización de la gestión de ancho de banda
+# Nuevas configuraciones
+connection_pool_size: 1000
+max_incoming_connections: 1000
+max_outgoing_connections: 1000
+read_cache_size: 67108864
+write_cache_size: 67108864
+max_piece_handlers: 100
+max_request_blocks: 250
+request_timeout: "20s"
+piece_timeout: "30s"
+max_peer_upload_slots: 1  # Reducido al mínimo
+max_peer_download_slots: 4
+max_active_downloads: 50
+max_active_seeds: 1  # Reducido al mínimo
+enable_ip_filtering: true
+ip_filter_file: "/etc/torrent/ipfilter.dat"
+enable_bandwidth_management: true
+bandwidth_management_interval: "1s"

@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -19,7 +20,7 @@ func (m *Manager) GetTorrent(infoHash string) (*torrent.Torrent, error) {
 
 	if ok {
 		m.updateLastAccessed(infoHash)
-		return m.waitForTorrentInfo(wrapper)
+		return wrapper.Torrent, nil
 	}
 
 	select {
@@ -34,7 +35,7 @@ func (m *Manager) GetTorrent(infoHash string) (*torrent.Torrent, error) {
 
 	if wrapper, ok = m.torrents[infoHash]; ok {
 		m.updateLastAccessed(infoHash)
-		return m.waitForTorrentInfo(wrapper)
+		return wrapper.Torrent, nil
 	}
 
 	t, err := m.addTorrentWithRetry(infoHash)
@@ -43,16 +44,14 @@ func (m *Manager) GetTorrent(infoHash string) (*torrent.Torrent, error) {
 	}
 
 	wrapper = &TorrentWrapper{
-		Torrent:   t,
-		infoReady: make(chan struct{}),
+		Torrent: t,
 	}
 	m.torrents[infoHash] = wrapper
 	m.updateLastAccessed(infoHash)
 
-	go m.manageTorrentInfo(wrapper, infoHash)
 	go m.monitorTorrent(t, infoHash)
 
-	return m.waitForTorrentInfo(wrapper)
+	return t, nil
 }
 
 func (m *Manager) addTorrentWithRetry(infoHash string) (*torrent.Torrent, error) {
@@ -62,7 +61,17 @@ func (m *Manager) addTorrentWithRetry(infoHash string) (*torrent.Torrent, error)
 	for i := 0; i < maxRetries; i++ {
 		t, err = m.client.AddMagnet(fmt.Sprintf("magnet:?xt=urn:btih:%s", infoHash))
 		if err == nil {
-			return t, nil
+			// Set a short timeout for metadata retrieval
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			// Wait for info with a timeout
+			select {
+			case <-t.GotInfo():
+				return t, nil
+			case <-ctx.Done():
+				return nil, fmt.Errorf("timeout waiting for torrent info")
+			}
 		}
 		time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
 	}

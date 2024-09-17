@@ -17,6 +17,7 @@ import (
 func NewRouter(cfg *config.Config, log zerolog.Logger, tm *torrent.Manager) *chi.Mux {
 	r := chi.NewRouter()
 
+	// Middleware
 	r.Use(middleware.RequestLogger(log))
 	r.Use(middleware.Recoverer(log))
 	r.Use(cors.Handler(cors.Options{
@@ -28,12 +29,22 @@ func NewRouter(cfg *config.Config, log zerolog.Logger, tm *torrent.Manager) *chi
 		MaxAge:           300,
 	}))
 
-	r.Get("/torrent/{infoHash}", handlers.GetTorrentInfo(tm))
+	// Create a new TorrentInfoCache
+	cache := handlers.NewTorrentInfoCache()
+
+	// Routes
+	r.Get("/torrent/{infoHash}", handlers.GetTorrentInfo(tm, cache))
 	r.Get("/stream/{infoHash}/{fileID}", handlers.StreamFile(tm))
 	r.Get("/hls/{infoHash}/{fileID}/playlist.m3u8", handlers.HLSPlaylist(tm))
 	r.Get("/hls/{infoHash}/{fileID}/{segmentID}.ts", handlers.HLSSegment(tm))
 	r.Get("/documents/{infoHash}/{fileID}", handlers.ServeDocument(tm))
 	r.Get("/images/{infoHash}/{fileID}", handlers.ServeImage(tm))
+
+	// Health check route
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 
 	return r
 }
