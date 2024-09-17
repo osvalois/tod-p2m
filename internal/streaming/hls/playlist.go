@@ -1,5 +1,6 @@
 package hls
 
+// internal/internal/streaming/adaptive/playlist.go
 import (
 	"fmt"
 	"io"

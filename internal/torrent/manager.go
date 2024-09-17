@@ -3,33 +3,22 @@ package torrent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/anacrolix/torrent"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 
 	"tod-p2m/internal/config"
 	"tod-p2m/internal/storage"
+	"tod-p2m/internal/streaming"
 )
 
-func (m *Manager) retryFileOperation(operation func() error, maxRetries int) error {
-	var err error
-	for i := 0; i < maxRetries; i++ {
-		err = operation()
-		if err == nil {
-			return nil
-		}
-		m.Logger.Warn().Err(err).Int("attempt", i+1).Msg("File operation failed, retrying")
-		time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
-	}
-	return fmt.Errorf("file operation failed after %d attempts: %w", maxRetries, err)
-}
-
-// NewManager creates and initializes a new Manager
 func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -52,6 +41,14 @@ func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
 		return nil, fmt.Errorf("failed to create file store: %w", err)
 	}
 
+	pieceCache, err := lru.New(1000) // Cache for 1000 pieces
+	if err != nil {
+		cancel()
+		client.Close()
+		cache.Close()
+		return nil, fmt.Errorf("failed to create piece cache: %w", err)
+	}
+
 	m := &Manager{
 		client:      client,
 		cache:       cache,
@@ -63,6 +60,7 @@ func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
 		ctx:         ctx,
 		cancel:      cancel,
 		downloadDir: cfg.DownloadDir,
+		pieceCache:  pieceCache,
 	}
 
 	go m.cleanupRoutine()
@@ -71,7 +69,6 @@ func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
 	return m, nil
 }
 
-// Close shuts down the Manager and releases resources
 func (m *Manager) Close() error {
 	m.cancel()
 	m.mu.Lock()
@@ -97,7 +94,7 @@ func (m *Manager) Close() error {
 
 	err := m.retryFileOperation(func() error {
 		return os.RemoveAll(m.downloadDir)
-	}, 3)
+	}, maxRetries)
 
 	if err != nil {
 		m.Logger.Error().Err(err).Msg("Error removing temporary directory after retries")
@@ -105,37 +102,97 @@ func (m *Manager) Close() error {
 
 	return nil
 }
-func getInfoHashFromPath(path string) string {
-	base := filepath.Base(path)
-	parts := strings.Split(base, "_")
-	if len(parts) > 0 {
-		return parts[0]
+
+func (m *Manager) GetPiece(t *torrent.Torrent, index int) ([]byte, error) {
+	cacheKey := fmt.Sprintf("%s-%d", t.InfoHash().String(), index)
+	if cachedPiece, ok := m.pieceCache.Get(cacheKey); ok {
+		return cachedPiece.([]byte), nil
 	}
-	return ""
+
+	// Obtener la longitud de la pieza directamente como un campo
+	pieceLength := t.Info().PieceLength
+
+	// Verifica si el índice de la pieza es válido
+	if index < 0 || index >= t.NumPieces() {
+		return nil, fmt.Errorf("índice de pieza fuera de rango")
+	}
+
+	// Crear un lector para la pieza
+	reader := t.NewReader()
+
+	// Mover el lector a la posición de inicio de la pieza
+	if _, err := reader.Seek(int64(index)*pieceLength, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("failed to seek to piece: %w", err)
+	}
+
+	// Leer los datos de la pieza
+	pieceData := make([]byte, pieceLength)
+	if _, err := io.ReadFull(reader, pieceData); err != nil {
+		return nil, fmt.Errorf("failed to read piece data: %w", err)
+	}
+
+	// Almacenar la pieza en la caché
+	m.pieceCache.Add(cacheKey, pieceData)
+
+	return pieceData, nil
 }
-func (m *Manager) handleBusyResource(path string) error {
-	m.Logger.Warn().Str("path", path).Msg("Resource busy, attempting to release")
 
-	infoHash := getInfoHashFromPath(path)
-	if infoHash != "" {
-		if err := m.cache.CloseFile(infoHash); err != nil {
-			m.Logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to close file in cache")
+func (m *Manager) UpdateNetworkSpeed(speed float64) {
+	m.speedMu.Lock()
+	defer m.speedMu.Unlock()
+	m.networkSpeed = speed
+}
+
+func (m *Manager) GetNetworkSpeed() float64 {
+	m.speedMu.RLock()
+	defer m.speedMu.RUnlock()
+	return m.networkSpeed
+}
+
+func (m *Manager) StreamFile(infoHash string, fileIndex int, w io.Writer) error {
+	t, err := m.GetTorrent(infoHash)
+	if err != nil {
+		return err
+	}
+
+	if fileIndex < 0 || fileIndex >= len(t.Files()) {
+		return ErrInvalidFileIndex
+	}
+
+	file := t.Files()[fileIndex]
+	prefetcher := streaming.NewPrefetcher(file, m.config.PieceBufferSize, piecePreloadCount)
+	circularBuffer := streaming.NewCircularBuffer(m.config.PieceBufferSize * 10)
+
+	go func() {
+		buffer := make([]byte, m.config.PieceBufferSize)
+		for {
+			n, err := prefetcher.Read(buffer)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				m.Logger.Error().Err(err).Msg("Error reading file")
+				break
+			}
+			circularBuffer.Write(buffer[:n])
+		}
+	}()
+
+	buffer := make([]byte, m.config.PieceBufferSize)
+	for {
+		n, err := circularBuffer.Read(buffer)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		_, err = w.Write(buffer[:n])
+		if err != nil {
+			return err
 		}
 	}
 
-	time.Sleep(1 * time.Second)
-
-	return m.retryFileOperation(func() error {
-		err := os.Remove(path)
-		if err != nil {
-			if os.IsPermission(err) {
-				chmodErr := os.Chmod(path, 0666)
-				if chmodErr != nil {
-					m.Logger.Error().Err(chmodErr).Str("path", path).Msg("Failed to change file permissions")
-				}
-				return os.Remove(path)
-			}
-		}
-		return err
-	}, maxRetries)
+	return nil
 }

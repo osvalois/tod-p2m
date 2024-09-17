@@ -1,5 +1,6 @@
 package config
 
+// internal/internal/config/config.go
 import (
 	"fmt"
 	"log"

@@ -1,11 +1,13 @@
 package torrent
 
+// internal/torrent/file_operations.go
 import (
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/anacrolix/torrent"
 )
@@ -114,4 +116,89 @@ func (m *Manager) removeEmptyDirs(dir string) error {
 	}
 
 	return nil
+}
+func (m *Manager) handleBusyResource(path string) error {
+	m.Logger.Warn().Str("path", path).Msg("Resource busy, attempting to release")
+
+	infoHash := getInfoHashFromPath(path)
+	if infoHash != "" {
+		if err := m.cache.CloseFile(infoHash); err != nil {
+			m.Logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to close file in cache")
+		}
+	}
+
+	// Espera un poco antes de intentar de nuevo
+	time.Sleep(1 * time.Second)
+
+	return m.retryFileOperation(func() error {
+		err := os.Remove(path)
+		if err != nil {
+			if os.IsPermission(err) {
+				// Intenta cambiar los permisos si es un error de permisos
+				chmodErr := os.Chmod(path, 0666)
+				if chmodErr != nil {
+					m.Logger.Error().Err(chmodErr).Str("path", path).Msg("Failed to change file permissions")
+					return chmodErr
+				}
+				// Intenta eliminar de nuevo después de cambiar los permisos
+				return os.Remove(path)
+			}
+		}
+		return err
+	}, maxRetries)
+}
+
+func (m *Manager) retryFileOperation(operation func() error, maxRetries int) error {
+	var err error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err = operation()
+		if err == nil {
+			return nil
+		}
+
+		if os.IsNotExist(err) {
+			// Si el archivo no existe, no hay necesidad de reintentar
+			return nil
+		}
+
+		if strings.Contains(err.Error(), "device or resource busy") {
+			// Si el recurso está ocupado, intenta manejarlo específicamente
+			busyErr := m.handleBusyResource(getPathFromError(err))
+			if busyErr == nil {
+				// Si se manejó correctamente, intenta la operación original de nuevo
+				continue
+			}
+		}
+
+		// Calcula el tiempo de espera con retroceso exponencial
+		waitTime := initialRetryWait * time.Duration(1<<uint(attempt))
+		if waitTime > maxRetryWait {
+			waitTime = maxRetryWait
+		}
+
+		m.Logger.Warn().Err(err).Int("attempt", attempt+1).Dur("wait", waitTime).Msg("File operation failed, retrying")
+		time.Sleep(waitTime)
+	}
+
+	return fmt.Errorf("file operation failed after %d attempts: %w", maxRetries, err)
+}
+
+func getInfoHashFromPath(path string) string {
+	base := filepath.Base(path)
+	parts := strings.Split(base, "_")
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return ""
+}
+
+func getPathFromError(err error) string {
+	// Esta función es una implementación de ejemplo. Puede que necesites ajustarla
+	// dependiendo de cómo se formateen los mensajes de error en tu sistema.
+	errMsg := err.Error()
+	parts := strings.Split(errMsg, "\"")
+	if len(parts) >= 3 {
+		return parts[1]
+	}
+	return ""
 }

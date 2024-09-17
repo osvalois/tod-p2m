@@ -1,5 +1,6 @@
 package middleware
 
+// internal/internal/middleware/logging.go
 import (
 	"net/http"
 	"time"

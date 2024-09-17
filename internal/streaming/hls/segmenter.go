@@ -1,5 +1,6 @@
 package hls
 
+// internal/internal/streaming/adaptive/segmenter.go
 import (
 	"fmt"
 	"io"

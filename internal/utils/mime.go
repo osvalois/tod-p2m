@@ -1,5 +1,6 @@
 package utils
 
+// internal/internal/streaming/utils/mime.go
 import (
 	"fmt"
 	"path/filepath"

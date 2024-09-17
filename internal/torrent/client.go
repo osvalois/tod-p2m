@@ -1,5 +1,6 @@
 package torrent
 
+// internal/torrent/client.go
 import (
 	"tod-p2m/internal/config"
 

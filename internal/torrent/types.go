@@ -8,10 +8,12 @@ import (
 	"tod-p2m/internal/storage"
 
 	"github.com/anacrolix/torrent"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/rs/zerolog"
 	"golang.org/x/time/rate"
 )
 
+// internal/torrent/types.go
 // TorrentWrapper extends torrent.Torrent with additional metadata
 type TorrentWrapper struct {
 	*torrent.Torrent
@@ -48,18 +50,20 @@ const (
 	maxMetadataSize       = 10 * 1024 * 1024 // 10MB límite para metadatos de torrent
 
 	// Intervalos de tiempo
-	pollInterval    = 100 * time.Millisecond // Aumentado para reducir la carga de CPU
-	cleanupInterval = 10 * time.Minute       // Aumentado para reducir la sobrecarga de limpieza
-	statsInterval   = 5 * time.Minute        // Aumentado para reducir la frecuencia de actualización de estadísticas
-	torrentTimeout  = 5 * time.Minute        // Aumentado para dar más tiempo a los torrents lentos
-	metadataTimeout = 1 * time.Minute        // Tiempo de espera para obtener metadatos
-
+	pollInterval      = 100 * time.Millisecond // Aumentado para reducir la carga de CPU
+	cleanupInterval   = 10 * time.Minute       // Aumentado para reducir la sobrecarga de limpieza
+	statsInterval     = 5 * time.Minute        // Aumentado para reducir la frecuencia de actualización de estadísticas
+	torrentTimeout    = 5 * time.Minute        // Aumentado para dar más tiempo a los torrents lentos
+	metadataTimeout   = 1 * time.Minute        // Tiempo de espera para obtener metadatos
+	piecePreloadCount = 5
+	initialRetryWait  = 100 * time.Millisecond
+	maxRetryWait      = 5 * time.Second
 	// Reintentos y backoff
 	maxRetries         = 5 // Aumentado para mayor resiliencia
 	initialRetryDelay  = 1 * time.Second
 	maxRetryDelay      = 1 * time.Minute
 	retryBackoffFactor = 2.0
-
+	retryDelay         = 100 * time.Millisecond
 	// Límites de velocidad y conexiones
 	maxDownloadSpeed = 20 * 1024 * 1024 // 20MB/s
 	maxUploadSpeed   = 5 * 1024 * 1024  // 5MB/s
@@ -74,7 +78,7 @@ const (
 
 type Manager struct {
 	client       *Client
-	cache        *storage.FileStore // Cambiado de fileStore a cache
+	cache        *storage.FileStore
 	config       *config.Config
 	Logger       zerolog.Logger
 	mu           sync.RWMutex
@@ -85,4 +89,7 @@ type Manager struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	downloadDir  string
+	pieceCache   *lru.Cache
+	networkSpeed float64
+	speedMu      sync.RWMutex
 }

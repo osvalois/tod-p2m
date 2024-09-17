@@ -1,13 +1,16 @@
 package torrent
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/anacrolix/torrent"
 )
 
+// internal/torrent/torrent_operations.go
 // GetTorrent retrieves or adds a torrent to the manager
 func (m *Manager) GetTorrent(infoHash string) (*torrent.Torrent, error) {
 	if err := m.limiter.Wait(m.ctx); err != nil {
@@ -77,6 +80,21 @@ func (m *Manager) addTorrentWithRetry(infoHash string) (*torrent.Torrent, error)
 	}
 
 	return nil, fmt.Errorf("failed to add magnet after %d retries: %w", maxRetries, err)
+}
+
+// Añadir este método al Manager en el paquete torrent
+func (m *Manager) GetFileWithBuffer(infoHash string, fileIndex int, bufferSize int64) (io.ReadCloser, error) {
+	file, err := m.GetFile(infoHash, fileIndex)
+	if err != nil {
+		return nil, err
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: bufio.NewReaderSize(file, int(bufferSize)),
+		Closer: file.(io.Closer),
+	}, nil
 }
 
 func (m *Manager) manageTorrentInfo(wrapper *TorrentWrapper, infoHash string) {

@@ -1,5 +1,6 @@
 package main
 
+// internal/cmd/server/main.go
 import (
 	"context"
 	"fmt"

@@ -1,5 +1,6 @@
 package torrent
 
+// internal/torrent/settings.go
 // SetMaxConnections sets the maximum number of connections for the torrent client
 func (m *Manager) SetMaxConnections(maxConnections int) {
 	m.client.SetMaxConnections(maxConnections)

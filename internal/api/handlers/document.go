@@ -1,5 +1,6 @@
 package handlers
 
+// internal/internal/handlers/document.go
 import (
 	"net/http"
 	"strconv"

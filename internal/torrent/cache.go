@@ -1,5 +1,6 @@
 package torrent
 
+// internal/torrent/cache.go
 import (
 	"bytes"
 	"container/list"

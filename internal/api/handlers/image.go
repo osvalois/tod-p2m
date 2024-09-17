@@ -1,5 +1,6 @@
 package handlers
 
+// internal/internal/handlers/image.go
 import (
 	"net/http"
 	"strconv"

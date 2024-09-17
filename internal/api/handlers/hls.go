@@ -1,5 +1,6 @@
 package handlers
 
+// internal/internal/handlers/hls.go
 import (
 	"fmt"
 	"io"

@@ -1,5 +1,6 @@
 package torrent
 
+// internal/torrent/errors.go
 import "errors"
 
 var (
