@@ -9,14 +9,40 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/klauspost/compress/zstd"
 )
+
+type PieceCache struct {
+	cache *lru.Cache
+	mu    sync.RWMutex
+}
 
 type CacheEntry struct {
 	Torrent      *torrent.Torrent
 	Info         *TorrentInfo
 	LastAccessed time.Time
 	Compressed   []byte
+}
+
+func NewPieceCache(size int) *PieceCache {
+	cache, _ := lru.New(size)
+	return &PieceCache{cache: cache}
+}
+
+func (pc *PieceCache) Get(key string) ([]byte, bool) {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	if val, ok := pc.cache.Get(key); ok {
+		return val.([]byte), true
+	}
+	return nil, false
+}
+
+func (pc *PieceCache) Set(key string, value []byte) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.cache.Add(key, value)
 }
 
 type Cache struct {

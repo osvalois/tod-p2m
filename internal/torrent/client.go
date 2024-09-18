@@ -29,6 +29,11 @@ func NewClient(cfg *config.Config, logger zerolog.Logger, tmpDir string) (*Clien
 	clientConfig.TorrentPeersLowWater = cfg.MaxConnections
 	clientConfig.Seed = true
 
+	// Ajustar estos valores para un rendimiento óptimo
+	//clientConfig.DefaultRequestStrategy = torrent.RequestStrategyFastest
+	clientConfig.DisableAggressiveUpload = false
+	//clientConfig.DisableEndgame = false
+
 	if cfg.DownloadRateLimit > 0 {
 		clientConfig.DownloadRateLimiter = rate.NewLimiter(rate.Limit(cfg.DownloadRateLimit), int(cfg.DownloadRateLimit))
 	}

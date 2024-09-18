@@ -9,13 +9,15 @@ import (
 	"github.com/anacrolix/torrent"
 )
 
+// En el archivo internal/streaming/prefetcher.go
+
 type Prefetcher struct {
 	file       *torrent.File
 	reader     io.Reader
 	bufferSize int
 	readAhead  int
-	mu         sync.Mutex
 	buffer     *ring.Ring
+	mu         sync.Mutex
 }
 
 func NewPrefetcher(file *torrent.File, bufferSize, readAhead int) *Prefetcher {
@@ -43,7 +45,6 @@ func (p *Prefetcher) prefetchRoutine() {
 			buffer := make([]byte, p.bufferSize)
 			n, err := p.reader.Read(buffer)
 			if err != nil && err != io.EOF {
-				// Manejar el error aquí
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -53,7 +54,7 @@ func (p *Prefetcher) prefetchRoutine() {
 			p.mu.Unlock()
 		}
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

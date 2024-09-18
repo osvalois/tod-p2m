@@ -16,7 +16,6 @@ import (
 
 	"tod-p2m/internal/config"
 	"tod-p2m/internal/storage"
-	"tod-p2m/internal/streaming"
 )
 
 func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
@@ -147,52 +146,4 @@ func (m *Manager) GetNetworkSpeed() float64 {
 	m.speedMu.RLock()
 	defer m.speedMu.RUnlock()
 	return m.networkSpeed
-}
-
-func (m *Manager) StreamFile(infoHash string, fileIndex int, w io.Writer) error {
-	t, err := m.GetTorrent(infoHash)
-	if err != nil {
-		return err
-	}
-
-	if fileIndex < 0 || fileIndex >= len(t.Files()) {
-		return ErrInvalidFileIndex
-	}
-
-	file := t.Files()[fileIndex]
-	prefetcher := streaming.NewPrefetcher(file, m.config.PieceBufferSize, piecePreloadCount)
-	circularBuffer := streaming.NewCircularBuffer(m.config.PieceBufferSize * 10)
-
-	go func() {
-		buffer := make([]byte, m.config.PieceBufferSize)
-		for {
-			n, err := prefetcher.Read(buffer)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				m.Logger.Error().Err(err).Msg("Error reading file")
-				break
-			}
-			circularBuffer.Write(buffer[:n])
-		}
-	}()
-
-	buffer := make([]byte, m.config.PieceBufferSize)
-	for {
-		n, err := circularBuffer.Read(buffer)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		_, err = w.Write(buffer[:n])
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
