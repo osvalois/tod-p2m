@@ -57,7 +57,7 @@ piece_read_ahead: 10
 # Resource Management
 cache_size: 100000
 cleanup_interval: "120m"
-download_dir: "/tmp"
+download_dir: "/downloads"
 keep_files: false
 max_download_time: "24h"
 enable_bandwidth_management: true
