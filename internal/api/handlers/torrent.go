@@ -1,6 +1,6 @@
+// internal/api/handlers/torrent.go
 package handlers
 
-// internal/internal/handlers/torrent.go
 import (
 	"context"
 	"net/http"
@@ -9,14 +9,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
+	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 
 	"tod-p2m/internal/torrent"
-)
-
-const (
-	infoCacheTTL    = 5 * time.Minute
-	infoCacheSize   = 1000
-	cleanupInterval = 10 * time.Minute
 )
 
 type cachedTorrentInfo struct {
@@ -25,13 +21,18 @@ type cachedTorrentInfo struct {
 }
 
 type TorrentInfoCache struct {
-	cache map[string]cachedTorrentInfo
-	mu    sync.RWMutex
+	cache   map[string]cachedTorrentInfo
+	mu      sync.RWMutex
+	ttl     time.Duration
+	maxSize int
+	sfGroup singleflight.Group
 }
 
-func NewTorrentInfoCache() *TorrentInfoCache {
+func NewTorrentInfoCache(ttl time.Duration, maxSize int) *TorrentInfoCache {
 	c := &TorrentInfoCache{
-		cache: make(map[string]cachedTorrentInfo),
+		cache:   make(map[string]cachedTorrentInfo),
+		ttl:     ttl,
+		maxSize: maxSize,
 	}
 	go c.cleanupRoutine()
 	return c
@@ -40,7 +41,7 @@ func NewTorrentInfoCache() *TorrentInfoCache {
 func (c *TorrentInfoCache) Get(infoHash string) (torrent.TorrentInfo, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if cachedInfo, ok := c.cache[infoHash]; ok && time.Since(cachedInfo.CacheTime) < infoCacheTTL {
+	if cachedInfo, ok := c.cache[infoHash]; ok && time.Since(cachedInfo.CacheTime) < c.ttl {
 		return cachedInfo.Info, true
 	}
 	return torrent.TorrentInfo{}, false
@@ -49,7 +50,7 @@ func (c *TorrentInfoCache) Get(infoHash string) (torrent.TorrentInfo, bool) {
 func (c *TorrentInfoCache) Set(infoHash string, info torrent.TorrentInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.cache) >= infoCacheSize {
+	if len(c.cache) >= c.maxSize {
 		c.evictOldest()
 	}
 	c.cache[infoHash] = cachedTorrentInfo{
@@ -71,13 +72,13 @@ func (c *TorrentInfoCache) evictOldest() {
 }
 
 func (c *TorrentInfoCache) cleanupRoutine() {
-	ticker := time.NewTicker(cleanupInterval)
+	ticker := time.NewTicker(c.ttl)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		c.mu.Lock()
 		for k, v := range c.cache {
-			if time.Since(v.CacheTime) > infoCacheTTL {
+			if time.Since(v.CacheTime) > c.ttl {
 				delete(c.cache, k)
 			}
 		}
@@ -85,52 +86,55 @@ func (c *TorrentInfoCache) cleanupRoutine() {
 	}
 }
 
-func GetTorrentInfo(tm *torrent.Manager, cache *TorrentInfoCache) http.HandlerFunc {
+func GetTorrentInfo(tm *torrent.Manager, cache *TorrentInfoCache, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		infoHash := chi.URLParam(r, "infoHash")
 
-		if cachedInfo, ok := cache.Get(infoHash); ok {
-			render.JSON(w, r, cachedInfo)
-			return
-		}
+		info, err, _ := cache.sfGroup.Do(infoHash, func() (interface{}, error) {
+			if cachedInfo, ok := cache.Get(infoHash); ok {
+				return cachedInfo, nil
+			}
 
-		t, err := tm.GetTorrent(infoHash)
+			t, err := tm.GetTorrent(infoHash)
+			if err != nil {
+				return nil, err
+			}
+
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+
+			select {
+			case <-t.GotInfo():
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+
+			info := torrent.TorrentInfo{
+				InfoHash: t.InfoHash().String(),
+				Name:     t.Name(),
+				Files:    make([]torrent.FileInfo, 0, len(t.Files())),
+			}
+
+			for i, f := range t.Files() {
+				info.Files = append(info.Files, torrent.FileInfo{
+					ID:       i,
+					Name:     f.DisplayPath(),
+					Size:     f.Length(),
+					Progress: float64(f.BytesCompleted()) / float64(f.Length()),
+				})
+			}
+
+			cache.Set(infoHash, info)
+			return info, nil
+		})
+
 		if err != nil {
+			log.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent info")
 			render.Status(r, http.StatusInternalServerError)
-			render.JSON(w, r, map[string]string{"error": err.Error()})
+			render.JSON(w, r, map[string]string{"error": "Failed to get torrent info"})
 			return
 		}
 
-		// Use a context with timeout for info retrieval
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-
-		// Wait for info with a timeout
-		select {
-		case <-t.GotInfo():
-			// Continue with processing
-		case <-ctx.Done():
-			render.Status(r, http.StatusGatewayTimeout)
-			render.JSON(w, r, map[string]string{"error": "Timeout waiting for torrent info"})
-			return
-		}
-
-		info := torrent.TorrentInfo{
-			InfoHash: t.InfoHash().String(),
-			Name:     t.Name(),
-			Files:    make([]torrent.FileInfo, 0, len(t.Files())),
-		}
-
-		for i, f := range t.Files() {
-			info.Files = append(info.Files, torrent.FileInfo{
-				ID:       i,
-				Name:     f.DisplayPath(),
-				Size:     f.Length(),
-				Progress: float64(f.BytesCompleted()) / float64(f.Length()),
-			})
-		}
-
-		cache.Set(infoHash, info)
 		render.JSON(w, r, info)
 	}
 }
