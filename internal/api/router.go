@@ -34,7 +34,7 @@ func NewRouter(cfg *config.Config, log zerolog.Logger, tm *torrent.Manager) *chi
 
 	// Routes
 	r.Get("/torrent/{infoHash}", handlers.GetTorrentInfo(tm, cache))
-	r.Get("/stream/{infoHash}/{fileID}", handlers.StreamFile(tm))
+	r.Get("/stream/{infoHash}/{fileID}", handlers.StreamFile(tm, cfg)) // Updated this line
 	r.Get("/hls/{infoHash}/{fileID}/playlist.m3u8", handlers.HLSPlaylist(tm))
 	r.Get("/hls/{infoHash}/{fileID}/{segmentID}.ts", handlers.HLSSegment(tm))
 	r.Get("/documents/{infoHash}/{fileID}", handlers.ServeDocument(tm))

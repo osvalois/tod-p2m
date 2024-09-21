@@ -35,7 +35,7 @@ func (m *Manager) cleanupRoutine() {
 }
 
 func (m *Manager) statsRoutine() {
-	ticker := time.NewTicker(statsInterval)
+	ticker := time.NewTicker(m.config.StatsInterval)
 	defer ticker.Stop()
 
 	for {
@@ -50,8 +50,8 @@ func (m *Manager) statsRoutine() {
 				Int("active_torrents", activeTorrents).
 				Int64("total_upload", clientStats.BytesWritten.Int64()).
 				Int64("total_download", clientStats.BytesRead.Int64()).
-				Float64("download_speed", float64(clientStats.BytesReadUsefulData.Int64())/statsInterval.Seconds()).
-				Float64("upload_speed", float64(clientStats.BytesWritten.Int64())/statsInterval.Seconds()).
+				Float64("download_speed", float64(clientStats.BytesReadUsefulData.Int64())/m.config.StatsInterval.Seconds()).
+				Float64("upload_speed", float64(clientStats.BytesWritten.Int64())/m.config.StatsInterval.Seconds()).
 				Msg("Torrent manager stats")
 		case <-m.ctx.Done():
 			return

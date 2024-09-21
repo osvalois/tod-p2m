@@ -18,7 +18,7 @@ func (m *Manager) initializePiecePriorities(wrapper *TorrentWrapper) {
 	wrapper.pieceStats = make([]pieceStats, numPieces)
 	for i := 0; i < numPieces; i++ {
 		priority := torrent.PiecePriorityNormal
-		if i < pieceSelectionWindow {
+		if i < m.config.PieceSelectionWindow {
 			priority = torrent.PiecePriorityHigh
 		}
 		wrapper.Piece(i).SetPriority(priority)

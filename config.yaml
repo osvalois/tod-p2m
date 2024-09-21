@@ -1,52 +1,92 @@
+# Network and Server Configuration
 port: "8080"
 log_level: "info"
-torrent_timeout: "180s"
-max_connections: 2000
-download_rate_limit: 104857600  # 100 MB/s (ajusta según el ancho de banda disponible)
-upload_rate_limit: 1024  # Reducido a 1 KB/s (prácticamente nulo)
-cache_size: 50000
-cleanup_interval: "125m"
-hls_segment_duration: 4
-download_dir: "/Users/oscarvalois/Downloads/torrents"
-keep_files: true
-max_download_time: "12h"
-dht_node_count: 2000
-peer_id_prefix: "-TD2024-"
-user_agent: "TorrentDownloader/2.1"
+max_connections: 5000  # Increased to handle more concurrent users
+download_rate_limit: 209715200  # 200 MB/s for faster downloads
+upload_rate_limit: 1048576  # 1 MB/s to maintain good ratios without impacting download speed
 tcp_port: 6881
 udp_port: 6882
 enable_upnp: true
 enable_dht: true
 enable_pex: true
 enable_lsd: true
-max_open_files: 4096
-write_buffer_size: 8388608
-read_buffer_size: 8388608
-max_peers_per_torrent: 300
-max_active_torrents: 100
-seed_ratio_limit: 0.0001  # Reducido al mínimo
-seed_time_limit: "1m"  # Reducido a 1 minuto
-piece_buffer_size: 524288
-enable_scrape: true
-tracker_timeout: "45s"
-enable_metadata_exchange: true
-max_metadata_size: 20971520
 
-# Nuevas configuraciones
-connection_pool_size: 1000
-max_incoming_connections: 1000
-max_outgoing_connections: 1000
-read_cache_size: 67108864
-write_cache_size: 67108864
-max_piece_handlers: 100
-max_request_blocks: 250
-request_timeout: "20s"
-piece_timeout: "30s"
-max_peer_upload_slots: 1  # Reducido al mínimo
-max_peer_download_slots: 4
-max_active_downloads: 50
-max_active_seeds: 1  # Reducido al mínimo
+# Torrent Client Configuration
+peer_id_prefix: "-TD2024-"
+user_agent: "TorrentStreamer/3.0"
+dht_node_count: 5000  # Increased for better peer discovery
+max_peers_per_torrent: 500  # Increased for better download speeds
+max_active_torrents: 200  # Increased to handle more concurrent streams
+seed_ratio_limit: 0.1  # Increased to maintain better ratios
+seed_time_limit: "5m"  # Increased to support the ecosystem
+max_metadata_size: 20971520  # 20MB to support larger torrent files
+enable_scrape: true
+tracker_timeout: "30s"
+enable_metadata_exchange: true
+
+# Connection and Peer Management
+connection_pool_size: 2000  # Increased for better connection reuse
+max_incoming_connections: 2500  # Balanced with outgoing connections
+max_outgoing_connections: 2500
+max_peer_upload_slots: 2  # Slightly increased to improve ratios
+max_peer_download_slots: 8  # Increased for faster downloads
+max_active_downloads: 100  # Increased to support more concurrent streams
+max_active_seeds: 10  # Increased to support the ecosystem
 enable_ip_filtering: true
 ip_filter_file: "/etc/torrent/ipfilter.dat"
+
+# Performance Tuning
+max_open_files: 8192  # Increased for better I/O performance
+write_buffer_size: 16777216  # 16MB for better write performance
+read_buffer_size: 16777216  # 16MB for better read performance
+piece_buffer_size: 1048576  # 1MB for better memory usage
+write_cache_size: 134217728  # 128MB for improved write caching
+read_cache_size: 268435456  # 256MB for improved read caching
+max_piece_handlers: 200  # Increased for better parallel processing
+max_request_blocks: 500  # Increased for better download efficiency
+
+# Streaming Optimization
+buffer_size: 41943040  # 40MB for smoother playback
+prefetch_size: 20  # Increased for better buffering
+stream_chunk_size: 2097152  # 2MB for efficient streaming
+hls_segment_duration: 4  # Kept at 4 seconds for good balance of quality and adaptability
+piece_preload_count: 10  # Increased for smoother playback
+piece_read_ahead: 10  # Increased for better buffering
+
+# Resource Management
+cache_size: 100000  # Increased for better caching
+cleanup_interval: "120m"  # Reduced to free up resources more frequently
+download_dir: "/downloads"  # Changed to a dedicated high-speed storage
+keep_files: false  # Changed to automatically clean up after streaming
+max_download_time: "24h"  # Increased to support larger files
 enable_bandwidth_management: true
-bandwidth_management_interval: "1s"
+bandwidth_management_interval: "500ms"  # More frequent adjustments
+
+# Concurrency and Request Handling
+max_concurrent_torrents: 100  # Increased to support more simultaneous streams
+max_pending_requests: 400  # Increased for better parallelism
+piece_selection_window: 100  # Increased for more efficient piece selection
+max_peers: 100  # Increased for better swarm utilization
+
+# Timeouts and Retries
+wait_timeout: "20s"
+request_timeout: "15s"
+piece_timeout: "20s"
+torrent_timeout: "10m"
+metadata_timeout: "2m"
+poll_interval: "50ms"  # Reduced for more responsive updates
+stats_interval: "1m"  # More frequent stats updates
+initial_retry_wait: "50ms"
+max_retry_wait: "3s"
+max_retries: 8  # Increased for better resilience
+initial_retry_delay: "500ms"
+max_retry_delay: "30s"
+retry_backoff_factor: 1.5
+retry_delay: "50ms"
+
+# Speed Limits
+max_download_speed: 209715200  # 200MB/s
+max_upload_speed: 10485760  # 10MB/s
+
+# Caching
+piece_cache_size: 2000  # Increased for better caching

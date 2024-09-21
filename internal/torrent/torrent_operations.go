@@ -61,7 +61,7 @@ func (m *Manager) addTorrentWithRetry(infoHash string) (*torrent.Torrent, error)
 	var t *torrent.Torrent
 	var err error
 
-	for i := 0; i < maxRetries; i++ {
+	for i := 0; i < m.config.MaxRetries; i++ {
 		t, err = m.client.AddMagnet(fmt.Sprintf("magnet:?xt=urn:btih:%s", infoHash))
 		if err == nil {
 			// Set a short timeout for metadata retrieval
@@ -79,7 +79,7 @@ func (m *Manager) addTorrentWithRetry(infoHash string) (*torrent.Torrent, error)
 		time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
 	}
 
-	return nil, fmt.Errorf("failed to add magnet after %d retries: %w", maxRetries, err)
+	return nil, fmt.Errorf("failed to add magnet after %d retries: %w", m.config.MaxRetries, err)
 }
 
 // Añadir este método al Manager en el paquete torrent
@@ -117,7 +117,7 @@ func (m *Manager) manageTorrentInfo(wrapper *TorrentWrapper, infoHash string) {
 			}
 			m.initializePiecePriorities(wrapper)
 		}
-	case <-time.After(torrentTimeout):
+	case <-time.After(m.config.TorrentTimeout):
 		m.removeTorrent(infoHash)
 	case <-m.ctx.Done():
 		return
@@ -125,8 +125,8 @@ func (m *Manager) manageTorrentInfo(wrapper *TorrentWrapper, infoHash string) {
 }
 
 func (m *Manager) waitForTorrentInfo(wrapper *TorrentWrapper) (*torrent.Torrent, error) {
-	timeout := time.After(torrentTimeout)
-	ticker := time.NewTicker(pollInterval)
+	timeout := time.After(m.config.TorrentTimeout)
+	ticker := time.NewTicker(m.config.PollInterval)
 	defer ticker.Stop()
 
 	for {

@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/anacrolix/torrent"
 	lru "github.com/hashicorp/golang-lru"
@@ -54,8 +53,8 @@ func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
 		config:      cfg,
 		Logger:      log,
 		torrents:    make(map[string]*TorrentWrapper),
-		limiter:     rate.NewLimiter(rate.Every(10*time.Millisecond), 100),
-		semaphore:   make(chan struct{}, maxConcurrentTorrents),
+		limiter:     rate.NewLimiter(rate.Every(cfg.RetryDelay), cfg.MaxPendingRequests),
+		semaphore:   make(chan struct{}, cfg.MaxConcurrentTorrents),
 		ctx:         ctx,
 		cancel:      cancel,
 		downloadDir: cfg.DownloadDir,
@@ -93,7 +92,7 @@ func (m *Manager) Close() error {
 
 	err := m.retryFileOperation(func() error {
 		return os.RemoveAll(m.downloadDir)
-	}, maxRetries)
+	}, m.config.MaxRetries)
 
 	if err != nil {
 		m.Logger.Error().Err(err).Msg("Error removing temporary directory after retries")

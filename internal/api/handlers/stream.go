@@ -1,5 +1,3 @@
-// internal/api/handlers/stream.go
-
 package handlers
 
 import (
@@ -14,19 +12,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
 
+	"tod-p2m/internal/config"
 	"tod-p2m/internal/streaming"
 	torrentManager "tod-p2m/internal/torrent"
 	"tod-p2m/internal/utils"
 )
 
-const (
-	bufferSize      = 20 * 1024 * 1024 // 20MB
-	prefetchSize    = 10
-	streamChunkSize = 1024 * 1024 // 1MB
-	waitTimeout     = 30 * time.Second
-)
-
-func StreamFile(tm *torrentManager.Manager) http.HandlerFunc {
+func StreamFile(tm *torrentManager.Manager, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		infoHash := chi.URLParam(r, "infoHash")
 		fileIDStr := chi.URLParam(r, "fileID")
@@ -45,10 +37,9 @@ func StreamFile(tm *torrentManager.Manager) http.HandlerFunc {
 			return
 		}
 
-		// Esperar a que el torrent obtenga la información necesaria
 		select {
 		case <-t.GotInfo():
-		case <-time.After(waitTimeout):
+		case <-time.After(cfg.TorrentTimeout):
 			render.Status(r, http.StatusRequestTimeout)
 			render.JSON(w, r, map[string]string{"error": "Timeout waiting for torrent info"})
 			return
@@ -63,10 +54,9 @@ func StreamFile(tm *torrentManager.Manager) http.HandlerFunc {
 		file := t.Files()[fileID]
 		fileSize := file.Length()
 
-		// Iniciar la descarga del archivo
 		file.Download()
 
-		buffer := streaming.NewBuffer(file, bufferSize, prefetchSize)
+		buffer := streaming.NewBuffer(file, cfg.CacheSize, cfg.MaxPieceHandlers)
 		defer buffer.Close()
 
 		fileInfo := utils.GetFileInfo(file)
@@ -75,20 +65,19 @@ func StreamFile(tm *torrentManager.Manager) http.HandlerFunc {
 
 		rangeHeader := r.Header.Get("Range")
 		if rangeHeader != "" {
-			if err := handleRangeRequest(w, r, buffer, fileSize); err != nil {
+			if err := handleRangeRequest(w, r, buffer, fileSize, cfg); err != nil {
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
 		} else {
 			w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 			w.WriteHeader(http.StatusOK)
-			if err := streamWithBuffer(w, buffer, file); err != nil {
+			if err := streamWithBuffer(w, buffer, file, cfg); err != nil {
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
 		}
 
-		// Log streaming metrics
 		metrics := buffer.GetMetrics()
 		tm.Logger.Info().
 			Str("infoHash", infoHash).
@@ -101,7 +90,7 @@ func StreamFile(tm *torrentManager.Manager) http.HandlerFunc {
 	}
 }
 
-func handleRangeRequest(w http.ResponseWriter, r *http.Request, buffer *streaming.Buffer, fileSize int64) error {
+func handleRangeRequest(w http.ResponseWriter, r *http.Request, buffer *streaming.Buffer, fileSize int64, cfg *config.Config) error {
 	rangeHeader := r.Header.Get("Range")
 	start, end, err := parseRange(rangeHeader, fileSize)
 	if err != nil {
@@ -113,11 +102,11 @@ func handleRangeRequest(w http.ResponseWriter, r *http.Request, buffer *streamin
 	w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
 	w.WriteHeader(http.StatusPartialContent)
 
-	return streamRange(w, buffer, start, end)
+	return streamRange(w, buffer, start, end, cfg)
 }
 
-func streamWithBuffer(w http.ResponseWriter, buffer *streaming.Buffer, file *torrent.File) error {
-	chunk := make([]byte, streamChunkSize)
+func streamWithBuffer(w http.ResponseWriter, buffer *streaming.Buffer, file *torrent.File, cfg *config.Config) error {
+	chunk := make([]byte, cfg.WriteBufferSize)
 	for {
 		n, err := buffer.Read(chunk)
 		if err != nil && err != io.EOF {
@@ -134,19 +123,18 @@ func streamWithBuffer(w http.ResponseWriter, buffer *streaming.Buffer, file *tor
 			f.Flush()
 		}
 
-		// Asegurar que la descarga continúe
 		file.Download()
 	}
 	return nil
 }
 
-func streamRange(w http.ResponseWriter, buffer *streaming.Buffer, start, end int64) error {
-	_, err := buffer.ReadAt(make([]byte, 1), start) // Trigger prefetch
+func streamRange(w http.ResponseWriter, buffer *streaming.Buffer, start, end int64, cfg *config.Config) error {
+	_, err := buffer.ReadAt(make([]byte, 1), start)
 	if err != nil {
 		return err
 	}
 
-	chunk := make([]byte, streamChunkSize)
+	chunk := make([]byte, cfg.WriteBufferSize)
 	for offset := start; offset <= end; {
 		remainingBytes := end - offset + 1
 		if remainingBytes < int64(len(chunk)) {
