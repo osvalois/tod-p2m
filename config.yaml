@@ -1,177 +1,109 @@
-# TorrentStreamer Pro Configuration
-# Version: 4.0.0
-
 # Network and Server Configuration
-server:
-  port: "8080"
-  log_level: "info"  # Changed to info for production use
-  max_connections: 10000  # Increased for higher concurrency
-  download_rate_limit: 314572800  # 300 MB/s for even faster downloads
-  upload_rate_limit: 10485760  # 10 MB/s to better support the ecosystem
-  rate_limit: 2000  # Increased for better responsiveness
-  tcp_port: 6881
-  udp_port: 6882
-  enable_upnp: true
-  enable_dht: true
-  enable_pex: true
-  enable_lsd: true
-  cors_allowed_origins: 
-    - "https://example.com"
-    - "https://api.example.com"
-  read_timeout: "30s"
-  write_timeout: "30s"
-  idle_timeout: "120s"
-  shutdown_timeout: "30s"
-
-# Security Configuration
-security:
-  enable_tls: true
-  cert_file: "/etc/tls/cert.pem"
-  key_file: "/etc/tls/key.pem"
-  enable_ip_filtering: true
-  ip_filter_file: "/etc/torrent/ipfilter.dat"
-  max_requests_per_second: 100  # Rate limiting per IP
-  ddos_protection: true
-  api_key_required: true
-  jwt_secret: "your-jwt-secret-here"
-  jwt_expiration: "24h"
+port: "8080"
+log_level: "debug"
+max_connections: 5000
+download_rate_limit: 209715200
+upload_rate_limit: 1048576
+rate_limit: 1000
+tcp_port: 6881
+udp_port: 6882
+enable_upnp: true
+enable_dht: true
+enable_pex: true
+enable_lsd: true
 
 # Torrent Client Configuration
-torrent:
-  peer_id_prefix: "-TS4000-"  # Updated for new version
-  user_agent: "TorrentStreamerPro/4.0"
-  dht_node_count: 8000  # Increased for even better peer discovery
-  max_peers_per_torrent: 1000  # Doubled for faster downloads
-  max_active_torrents: 500  # Increased for higher capacity
-  seed_ratio_limit: 0.2  # Increased to better support the ecosystem
-  seed_time_limit: "15m"  # Increased seed time
-  max_metadata_size: 52428800  # 50MB to support even larger torrent files
-  enable_scrape: true
-  tracker_timeout: "45s"
-  enable_metadata_exchange: true
-  max_torrent_size: 107374182400  # 100GB max torrent size
+peer_id_prefix: "-TD2024-"
+user_agent: "TorrentStreamer/3.0"
+dht_node_count: 5000
+max_peers_per_torrent: 500
+max_active_torrents: 200
+seed_ratio_limit: 0.1
+seed_time_limit: "5m"
+max_metadata_size: 20971520
+enable_scrape: true
+tracker_timeout: "30s"
+enable_metadata_exchange: true
 
 # Connection and Peer Management
-connections:
-  pool_size: 5000  # Increased for better connection reuse
-  max_incoming: 5000  # Increased capacity
-  max_outgoing: 5000  # Increased capacity
-  max_peer_upload_slots: 4  # Doubled to improve ratios
-  max_peer_download_slots: 16  # Doubled for faster downloads
-  max_active_downloads: 200  # Doubled capacity
-  max_active_seeds: 50  # Increased to better support the ecosystem
+connection_pool_size: 2000
+max_incoming_connections: 2500
+max_outgoing_connections: 2500
+max_peer_upload_slots: 2
+max_peer_download_slots: 8
+max_active_downloads: 100
+max_active_seeds: 10
+enable_ip_filtering: true
+ip_filter_file: "/etc/torrent/ipfilter.dat"
 
 # Performance Tuning
-performance:
-  max_open_files: 16384  # Doubled for even better I/O performance
-  write_buffer_size: 33554432  # 32MB for better write performance
-  read_buffer_size: 33554432  # 32MB for better read performance
-  piece_buffer_size: 2097152  # 2MB for better memory usage
-  write_cache_size: 268435456  # 256MB for improved write caching
-  read_cache_size: 536870912  # 512MB for improved read caching
-  max_piece_handlers: 400  # Doubled for better parallel processing
-  max_request_blocks: 1000  # Doubled for better download efficiency
+max_open_files: 8192
+write_buffer_size: 16777216
+read_buffer_size: 16777216
+piece_buffer_size: 1048576
+write_cache_size: 134217728
+read_cache_size: 268435456
+max_piece_handlers: 200
+max_request_blocks: 500
 
 # Streaming Optimization
-streaming:
-  buffer_size: 83886080  # 80MB for even smoother playback
-  prefetch_size: 40  # Doubled for better buffering
-  stream_chunk_size: 4194304  # 4MB for more efficient streaming
-  hls_segment_duration: 4  # Kept at 4 seconds for good balance
-  piece_preload_count: 20  # Doubled for smoother playback
-  piece_read_ahead: 20  # Doubled for better buffering
+buffer_size: 41943040
+prefetch_size: 20
+stream_chunk_size: 2097152
+hls_segment_duration: 4
+piece_preload_count: 10
+piece_read_ahead: 10
 
 # Resource Management
-resources:
-  cache_size: 200000  # Doubled for better caching
-  cleanup_interval: "60m"  # More frequent cleanup
-  download_dir: "/mnt/high-speed-storage/downloads"  # Dedicated high-speed storage
-  keep_files: false  # Auto-cleanup after streaming
-  max_download_time: "48h"  # Extended for very large files
-  enable_bandwidth_management: true
-  bandwidth_management_interval: "250ms"  # More frequent adjustments
+cache_size: 100000
+cleanup_interval: "120m"
+download_dir: "/tmp"
+keep_files: false
+max_download_time: "24h"
+enable_bandwidth_management: true
+bandwidth_management_interval: "500ms"
 
 # Concurrency and Request Handling
-concurrency:
-  max_concurrent_torrents: 200  # Doubled capacity
-  max_pending_requests: 800  # Doubled for better parallelism
-  piece_selection_window: 200  # Doubled for more efficient selection
-  max_peers: 200  # Doubled for better swarm utilization
+max_concurrent_torrents: 100
+max_pending_requests: 400
+piece_selection_window: 100
+max_peers: 100
 
 # Timeouts and Retries
-timeouts:
-  wait: "30s"
-  request: "20s"
-  piece: "30s"
-  torrent: "15m"
-  metadata: "3m"
-  poll_interval: "25ms"  # More responsive updates
-  stats_interval: "30s"  # More frequent stats updates
-  initial_retry_wait: "25ms"
-  max_retry_wait: "5s"
-  max_retries: 12  # Increased for better resilience
-  initial_retry_delay: "250ms"
-  max_retry_delay: "45s"
-  retry_backoff_factor: 1.3
-  retry_delay: "25ms"
+wait_timeout: "20s"
+request_timeout: "15s"
+piece_timeout: "20s"
+torrent_timeout: "10m"
+metadata_timeout: "2m"
+poll_interval: "50ms"
+stats_interval: "1m"
+initial_retry_wait: "50ms"
+max_retry_wait: "3s"
+max_retries: 8
+initial_retry_delay: "500ms"
+max_retry_delay: "30s"
+retry_backoff_factor: 1.5
+retry_delay: "50ms"
 
 # Speed Limits
-speed:
-  max_download: 314572800  # 300MB/s
-  max_upload: 20971520  # 20MB/s
+max_download_speed: 209715200
+max_upload_speed: 10485760
 
-# Caching and Sessions
-caching:
-  piece_cache_size: 4000  # Doubled for better caching
-  session_timeout: "240m"  # Extended session duration
+# Caching
+piece_cache_size: 2000
+session_timeout: "180m"
 
-# Monitoring and Logging
-monitoring:
-  enable_prometheus: true
-  prometheus_port: 9090
-  log_format: "json"
-  log_file: "/var/log/torrent-streamer/app.log"
-  enable_tracing: true
-  jaeger_endpoint: "http://jaeger:14268/api/traces"
-
-# Database Configuration
-database:
-  type: "postgresql"
-  host: "db.example.com"
-  port: 5432
-  name: "torrent_streamer"
-  user: "torrent_user"
-  password: "your-secure-password"
-  max_open_conns: 100
-  max_idle_conns: 25
-  conn_max_lifetime: "1h"
-
-# Redis Configuration (for caching and rate limiting)
-redis:
-  host: "redis.example.com"
-  port: 6379
-  password: "your-redis-password"
-  db: 0
-  pool_size: 100
-
-# Circuit Breaker Configuration
-circuit_breaker:
-  timeout: "30s"
-  max_failures: 5
-  reset_timeout: "1m"
-  max_requests: 100
-  interval: 1m
-  min_requests: 10
-  error_threshold:  0.5
-
-# Feature Flags
-features:
-  enable_experimental: false
-  enable_beta_ui: false
-  enable_advanced_analytics: true
-
-# Maintenance
-maintenance:
-  enable_auto_update: true
-  update_check_interval: "24h"
-  scheduled_maintenance_window: "Sun 02:00-04:00 UTC"
+# New fields (added from the Go struct)
+cors_allowed_origins:
+  - "*"
+cache_ttl: "5m"
+server_read_timeout: "15s"
+server_write_timeout: "15s"
+server_idle_timeout: "60s"
+circuit_breaker_timeout: "30s"
+circuit_breaker_max_failures: 5
+circuit_breaker_max_requests: 100
+circuit_breaker_interval: "1m"
+circuit_breaker_min_requests: 10
+circuit_breaker_error_threshold: 0.5
+shutdown_timeout: "30s"
