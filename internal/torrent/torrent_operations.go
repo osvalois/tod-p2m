@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent"
+	"github.com/pkg/errors"
 )
 
-// internal/torrent/torrent_operations.go
 // GetTorrent retrieves or adds a torrent to the manager
 func (m *Manager) GetTorrent(infoHash string) (*torrent.Torrent, error) {
 	if err := m.limiter.Wait(m.ctx); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRateLimitExceeded, err)
+		return nil, errors.Wrap(ErrRateLimitExceeded, err.Error())
 	}
 
 	m.mu.RLock()
@@ -47,12 +47,14 @@ func (m *Manager) GetTorrent(infoHash string) (*torrent.Torrent, error) {
 	}
 
 	wrapper = &TorrentWrapper{
-		Torrent: t,
+		Torrent:      t,
+		infoReady:    make(chan struct{}),
+		lastAccessed: time.Now(),
 	}
 	m.torrents[infoHash] = wrapper
 	m.updateLastAccessed(infoHash)
 
-	go m.monitorTorrent(t, infoHash)
+	go m.monitorTorrent(wrapper, infoHash)
 
 	return t, nil
 }
@@ -64,29 +66,26 @@ func (m *Manager) addTorrentWithRetry(infoHash string) (*torrent.Torrent, error)
 	for i := 0; i < m.config.MaxRetries; i++ {
 		t, err = m.client.AddMagnet(fmt.Sprintf("magnet:?xt=urn:btih:%s", infoHash))
 		if err == nil {
-			// Set a short timeout for metadata retrieval
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
 			defer cancel()
 
-			// Wait for info with a timeout
 			select {
 			case <-t.GotInfo():
 				return t, nil
 			case <-ctx.Done():
-				return nil, fmt.Errorf("timeout waiting for torrent info")
+				return nil, errors.Wrap(ErrTorrentTimeout, "timeout waiting for torrent info")
 			}
 		}
 		time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
 	}
 
-	return nil, fmt.Errorf("failed to add magnet after %d retries: %w", m.config.MaxRetries, err)
+	return nil, errors.Wrapf(err, "failed to add magnet after %d retries", m.config.MaxRetries)
 }
 
-// Añadir este método al Manager en el paquete torrent
 func (m *Manager) GetFileWithBuffer(infoHash string, fileIndex int, bufferSize int64) (io.ReadCloser, error) {
 	file, err := m.GetFile(infoHash, fileIndex)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to get file")
 	}
 	return struct {
 		io.Reader
@@ -105,10 +104,10 @@ func (m *Manager) manageTorrentInfo(wrapper *TorrentWrapper, infoHash string) {
 	}()
 
 	select {
-	case <-wrapper.GotInfo():
+	case <-wrapper.Torrent.GotInfo():
 		wrapper.mu.Lock()
 		defer wrapper.mu.Unlock()
-		if wrapper.Info() != nil {
+		if wrapper.Torrent.Info() != nil {
 			select {
 			case <-wrapper.infoReady:
 				// Channel already closed, do nothing
@@ -134,7 +133,7 @@ func (m *Manager) waitForTorrentInfo(wrapper *TorrentWrapper) (*torrent.Torrent,
 		case <-wrapper.infoReady:
 			return wrapper.Torrent, nil
 		case <-ticker.C:
-			if wrapper.Info() != nil {
+			if wrapper.Torrent.Info() != nil {
 				wrapper.mu.Lock()
 				select {
 				case <-wrapper.infoReady:
@@ -153,7 +152,7 @@ func (m *Manager) waitForTorrentInfo(wrapper *TorrentWrapper) (*torrent.Torrent,
 	}
 }
 
-func (m *Manager) monitorTorrent(t *torrent.Torrent, infoHash string) {
+func (m *Manager) monitorTorrent(wrapper *TorrentWrapper, infoHash string) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -163,7 +162,7 @@ func (m *Manager) monitorTorrent(t *torrent.Torrent, infoHash string) {
 		select {
 		case <-ticker.C:
 			m.mu.RLock()
-			wrapper, ok := m.torrents[infoHash]
+			_, ok := m.torrents[infoHash]
 			m.mu.RUnlock()
 
 			if !ok {
@@ -176,7 +175,7 @@ func (m *Manager) monitorTorrent(t *torrent.Torrent, infoHash string) {
 			hasPieceStats := len(wrapper.pieceStats) > 0
 			wrapper.mu.RUnlock()
 
-			if time.Since(lastAccessed) > m.config.TorrentTimeout*2 && t.BytesCompleted() == t.Length() {
+			if time.Since(lastAccessed) > m.config.TorrentTimeout*2 && wrapper.Torrent.BytesCompleted() == wrapper.Torrent.Length() {
 				m.Logger.Info().Str("infoHash", infoHash).Msg("Torrent completed and not accessed, removing")
 				m.removeTorrent(infoHash)
 				return
@@ -193,10 +192,10 @@ func (m *Manager) monitorTorrent(t *torrent.Torrent, infoHash string) {
 			m.removeTorrent(infoHash)
 			return
 
-		case <-t.GotInfo():
+		case <-wrapper.Torrent.GotInfo():
 			m.Logger.Info().Str("infoHash", infoHash).Msg("Torrent info received")
 
-		case <-t.Closed():
+		case <-wrapper.Torrent.Closed():
 			m.Logger.Info().Str("infoHash", infoHash).Msg("Torrent closed, stopping monitor")
 			return
 
@@ -211,14 +210,14 @@ func (m *Manager) removeTorrent(infoHash string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if t, ok := m.torrents[infoHash]; ok {
+	if wrapper, ok := m.torrents[infoHash]; ok {
 		m.Logger.Info().Str("infoHash", infoHash).Msg("Removing torrent")
-		t.Drop()
+		wrapper.Torrent.Drop()
 		delete(m.torrents, infoHash)
 		m.lastAccessed.Delete(infoHash)
 
 		if !m.config.KeepFiles {
-			go m.deleteFiles(t.Torrent)
+			go m.deleteFiles(wrapper.Torrent)
 		}
 	}
 }
@@ -263,10 +262,13 @@ func (m *Manager) ResumeTorrent(infoHash string) error {
 
 // GetTorrentProgress returns the download progress of a torrent
 func (m *Manager) GetTorrentProgress(infoHash string) (float64, error) {
-	t, err := m.GetTorrent(infoHash)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get torrent: %w", err)
+	m.mu.RLock()
+	wrapper, ok := m.torrents[infoHash]
+	m.mu.RUnlock()
+
+	if !ok {
+		return 0, ErrTorrentNotFound
 	}
 
-	return float64(t.BytesCompleted()) / float64(t.Length()), nil
+	return float64(wrapper.Torrent.BytesCompleted()) / float64(wrapper.Torrent.Length()), nil
 }

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,15 @@ var (
 	sessionMutex sync.RWMutex
 )
 
+var (
+	ErrInvalidFileID      = errors.New("invalid file ID")
+	ErrTorrentNotFound    = errors.New("torrent not found")
+	ErrTorrentInfoTimeout = errors.New("timeout waiting for torrent info")
+	ErrFileNotFound       = errors.New("file not found")
+	ErrSessionCreation    = errors.New("failed to create streaming session")
+	ErrInvalidRange       = errors.New("invalid range")
+)
+
 func StreamFile(tm *torrentManager.Manager, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), cfg.RequestTimeout)
@@ -40,25 +50,25 @@ func StreamFile(tm *torrentManager.Manager, cfg *config.Config) http.HandlerFunc
 
 		fileID, err := strconv.Atoi(fileIDStr)
 		if err != nil {
-			renderError(w, r, http.StatusBadRequest, "Invalid file ID")
+			renderError(w, r, http.StatusBadRequest, ErrInvalidFileID.Error())
 			return
 		}
 
 		t, err := tm.GetTorrent(infoHash)
 		if err != nil {
-			renderError(w, r, http.StatusInternalServerError, "Failed to get torrent")
+			renderError(w, r, http.StatusInternalServerError, ErrTorrentNotFound.Error())
 			return
 		}
 
 		select {
 		case <-t.GotInfo():
 		case <-ctx.Done():
-			renderError(w, r, http.StatusRequestTimeout, "Timeout waiting for torrent info")
+			renderError(w, r, http.StatusRequestTimeout, ErrTorrentInfoTimeout.Error())
 			return
 		}
 
 		if fileID < 0 || fileID >= len(t.Files()) {
-			renderError(w, r, http.StatusNotFound, "File not found")
+			renderError(w, r, http.StatusNotFound, ErrFileNotFound.Error())
 			return
 		}
 
@@ -68,7 +78,7 @@ func StreamFile(tm *torrentManager.Manager, cfg *config.Config) http.HandlerFunc
 		sessionID := fmt.Sprintf("%s-%d", infoHash, fileID)
 		session, err := getOrCreateSession(sessionID, file, cfg)
 		if err != nil {
-			renderError(w, r, http.StatusInternalServerError, "Failed to create streaming session")
+			renderError(w, r, http.StatusInternalServerError, ErrSessionCreation.Error())
 			return
 		}
 
@@ -80,7 +90,7 @@ func StreamFile(tm *torrentManager.Manager, cfg *config.Config) http.HandlerFunc
 		if rangeHeader != "" {
 			if err := handleRangeRequest(w, r, session, fileSize, cfg); err != nil {
 				tm.Logger.Error().Err(err).Msg("Failed to handle range request")
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				renderError(w, r, http.StatusInternalServerError, "Failed to handle range request")
 				return
 			}
 		} else {
@@ -88,7 +98,7 @@ func StreamFile(tm *torrentManager.Manager, cfg *config.Config) http.HandlerFunc
 			w.WriteHeader(http.StatusOK)
 			if err := streamWithBuffer(w, session, cfg); err != nil {
 				tm.Logger.Error().Err(err).Msg("Failed to stream file")
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				// Don't send error to client as headers have already been sent
 				return
 			}
 		}
@@ -114,7 +124,7 @@ func getOrCreateSession(sessionID string, file *torrent.File, cfg *config.Config
 		sessionMutex.Lock()
 		defer sessionMutex.Unlock()
 
-		// Check again in case another goroutine created the session
+		// Double-check locking
 		if session, exists = sessions[sessionID]; !exists {
 			buffer := streaming.NewBuffer(file, cfg.CacheSize, cfg.MaxPieceHandlers)
 			session = &StreamSession{
@@ -216,13 +226,13 @@ func parseRange(rangeHeader string, fileSize int64) (int64, int64, error) {
 
 	const prefix = "bytes="
 	if !strings.HasPrefix(rangeHeader, prefix) {
-		return 0, 0, fmt.Errorf("invalid range header")
+		return 0, 0, ErrInvalidRange
 	}
 
 	rangePart := strings.TrimPrefix(rangeHeader, prefix)
 	parts := strings.Split(rangePart, "-")
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid range format")
+		return 0, 0, ErrInvalidRange
 	}
 
 	start, err := strconv.ParseInt(parts[0], 10, 64)
@@ -240,8 +250,8 @@ func parseRange(rangeHeader string, fileSize int64) (int64, int64, error) {
 		}
 	}
 
-	if start > end || end >= fileSize {
-		return 0, 0, fmt.Errorf("invalid range")
+	if start < 0 || start > end || end >= fileSize {
+		return 0, 0, ErrInvalidRange
 	}
 
 	return start, end, nil

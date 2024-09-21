@@ -40,8 +40,9 @@ func NewTorrentInfoCache(ttl time.Duration, maxSize int) *TorrentInfoCache {
 
 func (c *TorrentInfoCache) Get(infoHash string) (torrent.TorrentInfo, bool) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if cachedInfo, ok := c.cache[infoHash]; ok && time.Since(cachedInfo.CacheTime) < c.ttl {
+	cachedInfo, ok := c.cache[infoHash]
+	c.mu.RUnlock()
+	if ok && time.Since(cachedInfo.CacheTime) < c.ttl {
 		return cachedInfo.Info, true
 	}
 	return torrent.TorrentInfo{}, false
@@ -77,8 +78,9 @@ func (c *TorrentInfoCache) cleanupRoutine() {
 
 	for range ticker.C {
 		c.mu.Lock()
+		now := time.Now()
 		for k, v := range c.cache {
-			if time.Since(v.CacheTime) > c.ttl {
+			if now.Sub(v.CacheTime) > c.ttl {
 				delete(c.cache, k)
 			}
 		}
@@ -89,6 +91,10 @@ func (c *TorrentInfoCache) cleanupRoutine() {
 func GetTorrentInfo(tm *torrent.Manager, cache *TorrentInfoCache, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		infoHash := chi.URLParam(r, "infoHash")
+		if infoHash == "" {
+			http.Error(w, "Missing infoHash parameter", http.StatusBadRequest)
+			return
+		}
 
 		info, err, _ := cache.sfGroup.Do(infoHash, func() (interface{}, error) {
 			if cachedInfo, ok := cache.Get(infoHash); ok {
@@ -130,8 +136,11 @@ func GetTorrentInfo(tm *torrent.Manager, cache *TorrentInfoCache, log zerolog.Lo
 
 		if err != nil {
 			log.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent info")
-			render.Status(r, http.StatusInternalServerError)
-			render.JSON(w, r, map[string]string{"error": "Failed to get torrent info"})
+			statusCode := http.StatusInternalServerError
+			if err == context.DeadlineExceeded {
+				statusCode = http.StatusRequestTimeout
+			}
+			http.Error(w, http.StatusText(statusCode), statusCode)
 			return
 		}
 

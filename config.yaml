@@ -95,7 +95,8 @@ session_timeout: "180m"
 
 # New fields (added from the Go struct)
 cors_allowed_origins:
-  - "*"
+  - "https://chillflix.fly.dev"
+  - "http://localhost:5173"
 cache_ttl: "5m"
 server_read_timeout: "15s"
 server_write_timeout: "15s"
