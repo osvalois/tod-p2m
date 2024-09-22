@@ -2,6 +2,7 @@
 package torrent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -162,7 +163,9 @@ func (m *Manager) handleBusyResource(path string) error {
 
 	infoHash := getInfoHashFromPath(path)
 	if infoHash != "" {
-		if err := m.cache.CloseFile(infoHash); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := m.cache.CloseFile(ctx, infoHash); err != nil {
 			m.Logger.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to close file in cache")
 		}
 	}

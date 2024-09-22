@@ -32,7 +32,7 @@ func NewManager(cfg *config.Config, log zerolog.Logger) (*Manager, error) {
 	}
 
 	cacheDir := filepath.Join(cfg.DownloadDir, "cache")
-	cache, err := storage.NewFileStore(cfg.CacheSize, cacheDir)
+	cache, err := storage.NewFileStore(cfg.CacheSize, cacheDir, int64(cfg.MaxConcurrentTorrents))
 	if err != nil {
 		cancel()
 		client.Close()
