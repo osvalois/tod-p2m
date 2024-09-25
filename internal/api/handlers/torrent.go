@@ -1,4 +1,3 @@
-// internal/api/handlers/torrent.go
 package handlers
 
 import (
@@ -10,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
 	"tod-p2m/internal/torrent"
@@ -21,8 +21,7 @@ type cachedTorrentInfo struct {
 }
 
 type TorrentInfoCache struct {
-	cache   map[string]cachedTorrentInfo
-	mu      sync.RWMutex
+	cache   sync.Map
 	ttl     time.Duration
 	maxSize int
 	sfGroup singleflight.Group
@@ -30,7 +29,6 @@ type TorrentInfoCache struct {
 
 func NewTorrentInfoCache(ttl time.Duration, maxSize int) *TorrentInfoCache {
 	c := &TorrentInfoCache{
-		cache:   make(map[string]cachedTorrentInfo),
 		ttl:     ttl,
 		maxSize: maxSize,
 	}
@@ -39,37 +37,47 @@ func NewTorrentInfoCache(ttl time.Duration, maxSize int) *TorrentInfoCache {
 }
 
 func (c *TorrentInfoCache) Get(infoHash string) (torrent.TorrentInfo, bool) {
-	c.mu.RLock()
-	cachedInfo, ok := c.cache[infoHash]
-	c.mu.RUnlock()
-	if ok && time.Since(cachedInfo.CacheTime) < c.ttl {
-		return cachedInfo.Info, true
+	if value, ok := c.cache.Load(infoHash); ok {
+		cachedInfo := value.(cachedTorrentInfo)
+		if time.Since(cachedInfo.CacheTime) < c.ttl {
+			return cachedInfo.Info, true
+		}
 	}
 	return torrent.TorrentInfo{}, false
 }
 
 func (c *TorrentInfoCache) Set(infoHash string, info torrent.TorrentInfo) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.cache) >= c.maxSize {
-		c.evictOldest()
-	}
-	c.cache[infoHash] = cachedTorrentInfo{
+	c.cache.Store(infoHash, cachedTorrentInfo{
 		Info:      info,
 		CacheTime: time.Now(),
-	}
+	})
+	c.evictIfNeeded()
 }
 
-func (c *TorrentInfoCache) evictOldest() {
-	var oldestKey string
-	var oldestTime time.Time
-	for k, v := range c.cache {
-		if oldestTime.IsZero() || v.CacheTime.Before(oldestTime) {
-			oldestKey = k
-			oldestTime = v.CacheTime
+func (c *TorrentInfoCache) evictIfNeeded() {
+	for {
+		count := 0
+		c.cache.Range(func(_, _ interface{}) bool {
+			count++
+			return true
+		})
+		if count <= c.maxSize {
+			return
+		}
+		var oldestKey interface{}
+		var oldestTime time.Time
+		c.cache.Range(func(key, value interface{}) bool {
+			info := value.(cachedTorrentInfo)
+			if oldestTime.IsZero() || info.CacheTime.Before(oldestTime) {
+				oldestKey = key
+				oldestTime = info.CacheTime
+			}
+			return true
+		})
+		if oldestKey != nil {
+			c.cache.Delete(oldestKey)
 		}
 	}
-	delete(c.cache, oldestKey)
 }
 
 func (c *TorrentInfoCache) cleanupRoutine() {
@@ -77,14 +85,14 @@ func (c *TorrentInfoCache) cleanupRoutine() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		c.mu.Lock()
 		now := time.Now()
-		for k, v := range c.cache {
-			if now.Sub(v.CacheTime) > c.ttl {
-				delete(c.cache, k)
+		c.cache.Range(func(key, value interface{}) bool {
+			info := value.(cachedTorrentInfo)
+			if now.Sub(info.CacheTime) > c.ttl {
+				c.cache.Delete(key)
 			}
-		}
-		c.mu.Unlock()
+			return true
+		})
 	}
 }
 
@@ -96,6 +104,9 @@ func GetTorrentInfo(tm *torrent.Manager, cache *TorrentInfoCache, log zerolog.Lo
 			return
 		}
 
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
 		info, err, _ := cache.sfGroup.Do(infoHash, func() (interface{}, error) {
 			if cachedInfo, ok := cache.Get(infoHash); ok {
 				return cachedInfo, nil
@@ -106,41 +117,57 @@ func GetTorrentInfo(tm *torrent.Manager, cache *TorrentInfoCache, log zerolog.Lo
 				return nil, err
 			}
 
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-			defer cancel()
-
-			select {
-			case <-t.GotInfo():
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-
-			info := torrent.TorrentInfo{
+			basicInfo := torrent.TorrentInfo{
 				InfoHash: t.InfoHash().String(),
 				Name:     t.Name(),
-				Files:    make([]torrent.FileInfo, 0, len(t.Files())),
+				Files:    []torrent.FileInfo{},
+				Seeders:  -1,
+				Leechers: -1,
 			}
 
-			for i, f := range t.Files() {
-				info.Files = append(info.Files, torrent.FileInfo{
-					ID:       i,
-					Name:     f.DisplayPath(),
-					Size:     f.Length(),
-					Progress: float64(f.BytesCompleted()) / float64(f.Length()),
-				})
+			eg, ctx := errgroup.WithContext(ctx)
+
+			eg.Go(func() error {
+				select {
+				case <-t.GotInfo():
+					completeInfo := torrent.TorrentInfo{
+						InfoHash: t.InfoHash().String(),
+						Name:     t.Name(),
+						Files:    make([]torrent.FileInfo, 0, len(t.Files())),
+						Seeders:  t.Stats().ConnectedSeeders,
+						Leechers: t.Stats().ActivePeers - t.Stats().ConnectedSeeders,
+					}
+
+					for i, f := range t.Files() {
+						completeInfo.Files = append(completeInfo.Files, torrent.FileInfo{
+							ID:       i,
+							Name:     f.DisplayPath(),
+							Size:     f.Length(),
+							Progress: float64(f.BytesCompleted()) / float64(f.Length()),
+						})
+					}
+
+					cache.Set(infoHash, completeInfo)
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+
+			if err := eg.Wait(); err != nil && err != context.DeadlineExceeded {
+				log.Warn().Err(err).Str("infoHash", infoHash).Msg("Error while waiting for complete torrent info")
 			}
 
-			cache.Set(infoHash, info)
-			return info, nil
+			finalInfo, _ := cache.Get(infoHash)
+			if finalInfo.Seeders == -1 {
+				return basicInfo, nil
+			}
+			return finalInfo, nil
 		})
 
 		if err != nil {
 			log.Error().Err(err).Str("infoHash", infoHash).Msg("Failed to get torrent info")
-			statusCode := http.StatusInternalServerError
-			if err == context.DeadlineExceeded {
-				statusCode = http.StatusRequestTimeout
-			}
-			http.Error(w, http.StatusText(statusCode), statusCode)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
 

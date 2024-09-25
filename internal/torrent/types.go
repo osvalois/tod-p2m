@@ -32,6 +32,8 @@ type TorrentInfo struct {
 	InfoHash string
 	Name     string
 	Files    []FileInfo
+	Seeders  int
+	Leechers int
 }
 
 type FileInfo struct {
