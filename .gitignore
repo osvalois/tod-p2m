@@ -79,3 +79,4 @@ fly.toml
 *.swp
 *.go-e
 *-eY
+*.go

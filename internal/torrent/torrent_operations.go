@@ -193,7 +193,7 @@ func (m *Manager) monitorTorrent(wrapper *TorrentWrapper, infoHash string) {
 			return
 
 		case <-wrapper.Torrent.GotInfo():
-			m.Logger.Info().Str("infoHash", infoHash).Msg("Torrent info received")
+			//m.Logger.Info().Str("infoHash", infoHash).Msg("Torrent info received")
 
 		case <-wrapper.Torrent.Closed():
 			m.Logger.Info().Str("infoHash", infoHash).Msg("Torrent closed, stopping monitor")
