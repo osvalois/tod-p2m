@@ -40,7 +40,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "Duration of HTTP requests",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 20), // Ajustado para capturar mejor las latencias de streaming
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 20),
 		},
 		[]string{"method", "path"},
 	)
@@ -112,10 +112,6 @@ func RateLimiter(cfg *config.Config) func(next http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/stream" {
-				next.ServeHTTP(w, r)
-				return
-			}
 			httpError := tollbooth.LimitByRequest(lmt, w, r)
 			if httpError != nil {
 				http.Error(w, httpError.Message, httpError.StatusCode)
@@ -129,11 +125,6 @@ func RateLimiter(cfg *config.Config) func(next http.Handler) http.Handler {
 func TimeoutMiddleware(timeout time.Duration) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/stream" {
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
 
@@ -166,13 +157,7 @@ func TimeoutMiddleware(timeout time.Duration) func(next http.Handler) http.Handl
 func CorsMiddleware(cfg *config.Config) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin := r.Header.Get("Origin")
-			for _, allowedOrigin := range cfg.CORSAllowedOrigins {
-				if origin == allowedOrigin {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-					break
-				}
-			}
+			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, X-CSRF-Token")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -182,6 +167,7 @@ func CorsMiddleware(cfg *config.Config) func(next http.Handler) http.Handler {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
+
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -212,6 +198,7 @@ func TracingMiddleware(tracer opentracing.Tracer) func(next http.Handler) http.H
 		})
 	}
 }
+
 func CircuitBreakerMiddleware(cfg *config.Config, log zerolog.Logger) func(next http.Handler) http.Handler {
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:        "HTTP",
@@ -229,19 +216,13 @@ func CircuitBreakerMiddleware(cfg *config.Config, log zerolog.Logger) func(next 
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/stream" {
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			_, err := cb.Execute(func() (interface{}, error) {
-				var err error
 				ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 				next.ServeHTTP(ww, r)
 				if ww.Status() >= 500 {
-					err = fmt.Errorf("server error: %d", ww.Status())
+					return nil, fmt.Errorf("server error: %d", ww.Status())
 				}
-				return nil, err
+				return nil, nil
 			})
 
 			if err != nil {
@@ -251,6 +232,7 @@ func CircuitBreakerMiddleware(cfg *config.Config, log zerolog.Logger) func(next 
 		})
 	}
 }
+
 func StreamingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/stream" {
@@ -273,7 +255,7 @@ func StreamingMiddleware(next http.Handler) http.Handler {
 func AdaptiveRateLimiter(cfg *config.Config) func(next http.Handler) http.Handler {
 	var (
 		mu       sync.Mutex
-		limiter  = rate.NewLimiter(rate.Limit(cfg.RateLimit), cfg.RateLimit) // Usamos RateLimit existente
+		limiter  = rate.NewLimiter(rate.Limit(cfg.RateLimit), cfg.RateLimit)
 		lastSeen = make(map[string]time.Time)
 	)
 
@@ -295,7 +277,7 @@ func AdaptiveRateLimiter(cfg *config.Config) func(next http.Handler) http.Handle
 
 			mu.Lock()
 			if _, exists := lastSeen[ip]; !exists {
-				limiter = rate.NewLimiter(rate.Limit(cfg.RateLimit), cfg.RateLimit) // Usamos RateLimit existente
+				limiter = rate.NewLimiter(rate.Limit(cfg.RateLimit), cfg.RateLimit)
 			}
 			lastSeen[ip] = time.Now()
 			mu.Unlock()
