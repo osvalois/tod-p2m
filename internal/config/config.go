@@ -22,6 +22,8 @@ type Config struct {
 	EnableDHT         bool   `mapstructure:"enable_dht"`
 	EnablePEX         bool   `mapstructure:"enable_pex"`
 	EnableLSD         bool   `mapstructure:"enable_lsd"`
+	InitialRateLimit  int    `yaml:"initial_rate_limit"`
+	RateLimitBurst    int    `yaml:"rate_limit_burst"`
 
 	// Torrent Client Configuration
 	PeerIDPrefix           string        `mapstructure:"peer_id_prefix"`
@@ -185,6 +187,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("piece_selection_window", 100)
 	viper.SetDefault("max_peers", 100)
 	viper.SetDefault("wait_timeout", "20s")
+	viper.SetDefault("initial_rate_limit", 1000)
+	viper.SetDefault("rate_limit_burst", 1000)
 	viper.SetDefault("request_timeout", "15s")
 	viper.SetDefault("piece_timeout", "20s")
 	viper.SetDefault("torrent_timeout", "10m")

@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/opentracing/opentracing-go"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
 
@@ -35,20 +36,21 @@ func NewRouter(cfg *config.Config, log zerolog.Logger, tm *torrent.Manager) (*ch
 	r.Use(middleware.CorsMiddleware(cfg))
 	r.Use(middleware.SecurityHeadersMiddleware)
 	r.Use(middleware.TracingMiddleware(tracer))
-	r.Use(middleware.CircuitBreakerMiddleware(cfg))
+	r.Use(middleware.CircuitBreakerMiddleware(cfg, log))
 	r.Use(middleware.CompressMiddleware)
+	r.Use(middleware.AdaptiveRateLimiter(cfg))
 
 	// Create a new TorrentInfoCache with expiration
 	cache := handlers.NewTorrentInfoCache(cfg.CacheTTL, cfg.CacheSize)
 
 	// Routes
+	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	r.Get("/torrent/{infoHash}", handlers.GetTorrentInfo(tm, cache, log))
 	r.Get("/stream/{infoHash}/{fileID}", handlers.StreamFile(tm, cfg))
 	r.Get("/hls/{infoHash}/{fileID}/playlist.m3u8", handlers.HLSPlaylist(tm))
 	r.Get("/hls/{infoHash}/{fileID}/{segmentID}.ts", handlers.HLSSegment(tm))
 	r.Get("/documents/{infoHash}/{fileID}", handlers.ServeDocument(tm))
 	r.Get("/images/{infoHash}/{fileID}", handlers.ServeImage(tm))
-
 	return r, nil
 }
 
@@ -62,7 +64,7 @@ func NewServer(cfg *config.Config, handler http.Handler) *http.Server {
 	}
 }
 
-func RunServer(srv *http.Server, shutdownTimeout time.Duration) error {
+func RunServer(srv *http.Server, shutdownTimeout time.Duration, log zerolog.Logger) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -70,13 +72,16 @@ func RunServer(srv *http.Server, shutdownTimeout time.Duration) error {
 
 	g.Go(func() error {
 		<-ctx.Done()
+		log.Info().Msg("Shutting down server...")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer shutdownCancel()
 		return srv.Shutdown(shutdownCtx)
 	})
 
 	g.Go(func() error {
+		log.Info().Str("addr", srv.Addr).Msg("Starting server")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error().Err(err).Msg("Server error")
 			return err
 		}
 		return nil

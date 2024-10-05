@@ -57,7 +57,7 @@ piece_read_ahead: 10
 # Resource Management
 cache_size: 100000
 cleanup_interval: "420m"
-download_dir: "/downloads"
+download_dir: "/tmp"
 keep_files: false
 max_download_time: "24h"
 enable_bandwidth_management: true
@@ -108,3 +108,5 @@ circuit_breaker_interval: "1m"
 circuit_breaker_min_requests: 10
 circuit_breaker_error_threshold: 0.5
 shutdown_timeout: "30s"
+rate_limit_burst: 1000
+initial_rate_limit: 1000

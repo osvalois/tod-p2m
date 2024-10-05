@@ -1,5 +1,3 @@
-// internal/middleware/middleware.go
-
 package middleware
 
 import (
@@ -7,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime/debug"
+	"sync"
 	"time"
 	"tod-p2m/internal/config"
 
@@ -20,17 +19,16 @@ import (
 	"github.com/sony/gobreaker"
 	"github.com/uber/jaeger-client-go"
 	jaegercfg "github.com/uber/jaeger-client-go/config"
+	"golang.org/x/time/rate"
 )
 
-var streamingErrors = promauto.NewCounter(
-	prometheus.CounterOpts{
-		Name: "streaming_errors_total",
-		Help: "Total number of streaming errors",
-	},
-)
-
-// Prometheus metrics for monitoring HTTP requests
 var (
+	streamingErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "streaming_errors_total",
+			Help: "Total number of streaming errors",
+		},
+	)
 	httpRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
@@ -38,18 +36,22 @@ var (
 		},
 		[]string{"method", "path", "status"},
 	)
-
 	httpRequestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "Duration of HTTP requests",
-			Buckets: prometheus.DefBuckets,
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 20), // Ajustado para capturar mejor las latencias de streaming
 		},
 		[]string{"method", "path"},
 	)
+	activeStreams = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "active_streams",
+			Help: "Number of active streaming connections",
+		},
+	)
 )
 
-// RequestLogger creates a middleware to log detailed information about each request
 func RequestLogger(log zerolog.Logger) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,16 +60,21 @@ func RequestLogger(log zerolog.Logger) func(next http.Handler) http.Handler {
 
 			defer func() {
 				duration := time.Since(t1)
-				if ww.Status() >= 400 || duration > 1*time.Second {
-					log.Info().
-						Str("method", r.Method).
-						Str("path", r.URL.Path).
-						Dur("latency", duration).
-						Int("status", ww.Status()).
-						Msg("Request processed")
+				status := ww.Status()
+				if status == 0 {
+					status = 200
 				}
+				log.Info().
+					Str("method", r.Method).
+					Str("path", r.URL.Path).
+					Dur("latency", duration).
+					Int("status", status).
+					Int64("bytes", int64(ww.BytesWritten())).
+					Str("ip", r.RemoteAddr).
+					Str("user-agent", r.UserAgent()).
+					Msg("Request processed")
 
-				httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, fmt.Sprintf("%d", ww.Status())).Inc()
+				httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, fmt.Sprintf("%d", status)).Inc()
 				httpRequestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration.Seconds())
 			}()
 
@@ -76,7 +83,6 @@ func RequestLogger(log zerolog.Logger) func(next http.Handler) http.Handler {
 	}
 }
 
-// Recoverer creates a middleware to recover from panics and log the error
 func Recoverer(log zerolog.Logger) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -100,17 +106,26 @@ func Recoverer(log zerolog.Logger) func(next http.Handler) http.Handler {
 	}
 }
 
-// RateLimiter creates a middleware to limit the request rate
 func RateLimiter(cfg *config.Config) func(next http.Handler) http.Handler {
 	lmt := tollbooth.NewLimiter(float64(cfg.RateLimit), &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
-	lmt.SetIPLookups([]string{"RemoteAddr", "X-Forwarded-For", "X-Real-IP"})
+	lmt.SetIPLookups([]string{"X-Forwarded-For", "X-Real-IP", "RemoteAddr"})
 
 	return func(next http.Handler) http.Handler {
-		return tollbooth.LimitHandler(lmt, next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/stream" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			httpError := tollbooth.LimitByRequest(lmt, w, r)
+			if httpError != nil {
+				http.Error(w, httpError.Message, httpError.StatusCode)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
-// TimeoutMiddleware creates a middleware to set a maximum timeout for requests
 func TimeoutMiddleware(timeout time.Duration) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,25 +138,31 @@ func TimeoutMiddleware(timeout time.Duration) func(next http.Handler) http.Handl
 			defer cancel()
 
 			r = r.WithContext(ctx)
-			done := make(chan bool, 1)
+			done := make(chan struct{})
+			panicChan := make(chan interface{}, 1)
 
 			go func() {
+				defer func() {
+					if p := recover(); p != nil {
+						panicChan <- p
+					}
+				}()
 				next.ServeHTTP(w, r)
-				done <- true
+				close(done)
 			}()
 
 			select {
+			case p := <-panicChan:
+				panic(p)
 			case <-ctx.Done():
 				w.WriteHeader(http.StatusGatewayTimeout)
 				fmt.Fprint(w, "Request timed out")
 			case <-done:
-				return
 			}
 		})
 	}
 }
 
-// CorsMiddleware creates a middleware to handle CORS
 func CorsMiddleware(cfg *config.Config) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +173,6 @@ func CorsMiddleware(cfg *config.Config) func(next http.Handler) http.Handler {
 					break
 				}
 			}
-
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, X-CSRF-Token")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -162,13 +182,11 @@ func CorsMiddleware(cfg *config.Config) func(next http.Handler) http.Handler {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
-
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-// SecurityHeadersMiddleware adds security headers to responses
 func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
@@ -177,12 +195,10 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
-
 		next.ServeHTTP(w, r)
 	})
 }
 
-// TracingMiddleware adds OpenTracing to requests
 func TracingMiddleware(tracer opentracing.Tracer) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,14 +208,11 @@ func TracingMiddleware(tracer opentracing.Tracer) func(next http.Handler) http.H
 
 			ctx := opentracing.ContextWithSpan(r.Context(), span)
 			r = r.WithContext(ctx)
-
 			next.ServeHTTP(w, r)
 		})
 	}
 }
-
-// CircuitBreakerMiddleware adds a circuit breaker to protect against cascading failures
-func CircuitBreakerMiddleware(cfg *config.Config) func(next http.Handler) http.Handler {
+func CircuitBreakerMiddleware(cfg *config.Config, log zerolog.Logger) func(next http.Handler) http.Handler {
 	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
 		Name:        "HTTP",
 		MaxRequests: cfg.CircuitBreakerMaxRequests,
@@ -210,7 +223,7 @@ func CircuitBreakerMiddleware(cfg *config.Config) func(next http.Handler) http.H
 			return counts.Requests >= cfg.CircuitBreakerMinRequests && failureRatio >= cfg.CircuitBreakerErrorThreshold
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			// Log state change or send alert
+			log.Info().Str("name", name).Str("from", from.String()).Str("to", to.String()).Msg("Circuit breaker state changed")
 		},
 	})
 
@@ -222,24 +235,32 @@ func CircuitBreakerMiddleware(cfg *config.Config) func(next http.Handler) http.H
 			}
 
 			_, err := cb.Execute(func() (interface{}, error) {
-				next.ServeHTTP(w, r)
-				return nil, nil
+				var err error
+				ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+				next.ServeHTTP(ww, r)
+				if ww.Status() >= 500 {
+					err = fmt.Errorf("server error: %d", ww.Status())
+				}
+				return nil, err
 			})
 
 			if err != nil {
+				log.Error().Err(err).Str("path", r.URL.Path).Msg("Circuit breaker: request failed")
 				http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
 			}
 		})
 	}
 }
-
-// StreamingMiddleware configures headers for streaming responses
 func StreamingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/stream" {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
+			w.Header().Set("Transfer-Encoding", "chunked")
+
+			activeStreams.Inc()
+			defer activeStreams.Dec()
 
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
@@ -249,12 +270,50 @@ func StreamingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// CompressMiddleware adds gzip compression to responses
-func CompressMiddleware(next http.Handler) http.Handler {
-	return middleware.Compress(5, "gzip")(next)
+func AdaptiveRateLimiter(cfg *config.Config) func(next http.Handler) http.Handler {
+	var (
+		mu       sync.Mutex
+		limiter  = rate.NewLimiter(rate.Limit(cfg.RateLimit), cfg.RateLimit) // Usamos RateLimit existente
+		lastSeen = make(map[string]time.Time)
+	)
+
+	go func() {
+		for range time.Tick(1 * time.Minute) {
+			mu.Lock()
+			for ip, t := range lastSeen {
+				if time.Since(t) > 5*time.Minute {
+					delete(lastSeen, ip)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := r.RemoteAddr
+
+			mu.Lock()
+			if _, exists := lastSeen[ip]; !exists {
+				limiter = rate.NewLimiter(rate.Limit(cfg.RateLimit), cfg.RateLimit) // Usamos RateLimit existente
+			}
+			lastSeen[ip] = time.Now()
+			mu.Unlock()
+
+			if !limiter.Allow() {
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-// InitTracer initializes Jaeger tracer
+func CompressMiddleware(next http.Handler) http.Handler {
+	return middleware.Compress(5, "gzip", "br")(next)
+}
+
 func InitTracer(serviceName string) (opentracing.Tracer, error) {
 	cfg := jaegercfg.Configuration{
 		ServiceName: serviceName,
@@ -263,9 +322,17 @@ func InitTracer(serviceName string) (opentracing.Tracer, error) {
 			Param: 1,
 		},
 		Reporter: &jaegercfg.ReporterConfig{
-			LogSpans: true,
+			LogSpans:            true,
+			BufferFlushInterval: 1 * time.Second,
 		},
 	}
-	tracer, _, err := cfg.NewTracer(jaegercfg.Logger(jaeger.StdLogger))
-	return tracer, err
+	tracer, closer, err := cfg.NewTracer(jaegercfg.Logger(jaeger.StdLogger))
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		<-time.After(5 * time.Second)
+		closer.Close()
+	}()
+	return tracer, nil
 }
