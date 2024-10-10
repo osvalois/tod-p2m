@@ -22,8 +22,9 @@ import (
 )
 
 type StreamSession struct {
-	Buffer *streaming.Buffer
-	File   *torrent.File
+	Buffer         *streaming.Buffer
+	File           *torrent.File
+	LastAccessTime time.Time
 }
 
 var (
@@ -98,7 +99,6 @@ func StreamFile(tm *torrentManager.Manager, cfg *config.Config) http.HandlerFunc
 			w.WriteHeader(http.StatusOK)
 			if err := streamWithBuffer(w, session, cfg); err != nil {
 				tm.Logger.Error().Err(err).Msg("Failed to stream file")
-				// Don't send error to client as headers have already been sent
 				return
 			}
 		}
@@ -128,22 +128,34 @@ func getOrCreateSession(sessionID string, file *torrent.File, cfg *config.Config
 		if session, exists = sessions[sessionID]; !exists {
 			buffer := streaming.NewBuffer(file, cfg.CacheSize, cfg.MaxPieceHandlers)
 			session = &StreamSession{
-				Buffer: buffer,
-				File:   file,
+				Buffer:         buffer,
+				File:           file,
+				LastAccessTime: time.Now(),
 			}
 			sessions[sessionID] = session
 
-			go func() {
-				<-time.After(cfg.SessionTimeout)
-				sessionMutex.Lock()
-				delete(sessions, sessionID)
-				sessionMutex.Unlock()
-				buffer.Close()
-			}()
+			go manageSessions(cfg.SessionTimeout)
 		}
 	}
 
+	session.LastAccessTime = time.Now()
 	return session, nil
+}
+
+func manageSessions(timeout time.Duration) {
+	ticker := time.NewTicker(timeout / 2)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		sessionMutex.Lock()
+		for id, session := range sessions {
+			if time.Since(session.LastAccessTime) > timeout {
+				delete(sessions, id)
+				session.Buffer.Close()
+			}
+		}
+		sessionMutex.Unlock()
+	}
 }
 
 func handleRangeRequest(w http.ResponseWriter, r *http.Request, session *StreamSession, fileSize int64, cfg *config.Config) error {
@@ -181,7 +193,7 @@ func streamWithBuffer(w http.ResponseWriter, session *StreamSession, cfg *config
 			f.Flush()
 		}
 
-		session.File.Download()
+		go session.File.Download()
 	}
 	return nil
 }
@@ -214,7 +226,7 @@ func streamRange(w http.ResponseWriter, session *StreamSession, start, end int64
 		}
 
 		offset += int64(n)
-		session.File.Download()
+		go session.File.Download()
 	}
 	return nil
 }
